@@ -10,6 +10,8 @@ services:
       MYSQL_DATABASE: storage_manager
     ports:
       - "3308:3306"
+    volumes:
+      - db_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-pGPn9yYfTiG6WiJDu1EJFSHZGhsUGO7uL"]
       interval: 10s
@@ -115,3 +117,4 @@ networks:
 
 volumes:
   minio_data:
+  db_data:
