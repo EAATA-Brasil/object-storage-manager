@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  ocorrencias-optimizer:
+    build: .
+    container_name: ocorrencias-optimizer
+    restart: unless-stopped
+    environment:
+      # ===== Manager (NOVO) =====
+      MANAGER_BASE_URL: "http://object-storage-backend:3005"
+      MANAGER_TOKEN: "testedev"
+      MANAGER_POLL_SECONDS: "60"
+      DEFAULT_STORAGE_ID: "minio-prod"
+
+      # ===== Fallback (modo antigo) =====
+      MINIO_ENDPOINT: "minio:9005"
+      MINIO_ACCESS_KEY: "admin"
+      MINIO_SECRET_KEY: "f84Ffo6fTM"
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: "eaata-prod"
+
+      PREFIX_ROOT: "ocorrencias/"
+      PREFIX_WORK: "ocorrencias/otimizando/"
+
+      MAX_CONCURRENCY: "1"
+      BATCH_SLEEP_MS: "0"
+      MIN_SIZE_KB: "0"
+      VIDEO_MAX_MB: "0"
+
+      IMG_MAX_WIDTH: "1600"
+      IMG_QUALITY_JPEG: "78"
+      IMG_QUALITY_WEBP: "72"
+
+      VIDEO_MAX_WIDTH: "1280"
+      VIDEO_CRF: "28"
+      VIDEO_PRESET: "veryfast"
+      AUDIO_BITRATE: "96k"
+
+    networks:
+      - root_eaata-net
+
+networks:
+  root_eaata-net:
+    external: true

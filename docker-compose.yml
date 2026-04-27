@@ -1,0 +1,117 @@
+version: "3.8"
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: object-storage-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: GPn9yYfTiG6WiJDu1EJFSHZGhsUGO7uL
+      MYSQL_DATABASE: storage_manager
+    ports:
+      - "3308:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-pGPn9yYfTiG6WiJDu1EJFSHZGhsUGO7uL"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - root_eaata-net
+
+  backend:
+    build: ./backend
+    container_name: object-storage-backend
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: GPn9yYfTiG6WiJDu1EJFSHZGhsUGO7uL
+      DB_NAME: storage_manager
+      JWT_SECRET: 7f5e1f827e8a4d9b9c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - root_eaata-net
+
+  frontend:
+    build: ./frontend
+    container_name: object-storage-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - root_eaata-net
+
+  optimizer:
+    build: ./optimizer
+    container_name: object-storage-optimizer
+    ports:
+      - "8000:8000"
+    environment:
+      MANAGER_BASE_URL: http://backend:3005
+      MANAGER_POLL_SECONDS: 30
+      DEFAULT_STORAGE_ID: teste
+      MINIO_ENDPOINT: http://minio:9005
+      MINIO_ACCESS_KEY: admin
+      MINIO_SECRET_KEY: f84Ffo6fTM
+      MAX_CONCURRENCY: 1
+      BATCH_SLEEP_MS: 100
+    depends_on:
+      - minio
+    networks:
+      - root_eaata-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    command: server /data --address ":9005" --console-address ":9006"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: f84Ffo6fTM
+      MINIO_SERVER_URL: "https://eaatamin.ddns.net"
+      MINIO_BROWSER_REDIRECT_URL: "https://eaatamin.ddns.net/console"
+      MINIO_SUBNET_LICENSE: "eyJhbGciOiJFUzM4NCIsInR5cCI6IkpXVCJ9.eyJhaWQiOjAsImNhcCI6MCwiaWF0IjoxLjc3MDMyNTk2NzIwNDY1MTg3N2U5LCJpc3MiOiJzdWJuZXRAbWluLmlvIiwibGlkIjoiMTIzNDZhYzUtOTUzOS00M2M2LWJjMGEtYmY2MWEzMWRkNzhjIiwib3JnIjoiIiwicGxhbiI6IkZSRUUiLCJzdWIiOiJkZXZAZWFhdGEucHJvIiwidHJpYWwiOmZhbHNlfQ.eXKmUG8lFiZ3h2liGZoZ9M8z-dQp-Ggo7SJJAmlE_kmO_dTKVnQf3tjPWe5KshKL0jn7DJ7abS4kqdsU2ix7fH336uhsITMcwZlj7yppQJClw_tg90nnyjvc-AXt4_5c"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9005:9005"
+      - "9006:9006"
+    networks:
+      - root_eaata-net
+
+  minio-setup:
+    image: minio/mc
+    container_name: object-storage-mc-setup
+    depends_on:
+      - minio
+      - optimizer
+    volumes:
+      - ./setup-minio.sh:/setup-minio.sh
+    entrypoint: ["/bin/sh", "/setup-minio.sh"]
+    environment:
+      MINIO_ENDPOINT: http://minio:9005
+      MINIO_ACCESS_KEY: admin
+      MINIO_SECRET_KEY: f84Ffo6fTM
+      WEBHOOK_URL: http://optimizer:8000/minio-webhook?storage_id=teste
+    networks:
+      - root_eaata-net
+
+networks:
+  root_eaata-net:
+    external: true
+
+volumes:
+  minio_data:
