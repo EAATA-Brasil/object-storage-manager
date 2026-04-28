@@ -322,6 +322,8 @@ tr:hover td { background: #fbfcfe; }
 .stat-card.optimized-card {
   border-color: #bbf7d0;
   background: #f0fdf4;
+  display: flex;
+  flex-direction: column;
 }
 
 .stat-card.optimized-card .stat-value {
@@ -442,8 +444,12 @@ input:checked + .slider:before {
 
 @media (max-width: 1024px) {
   :root { --sidebar-w: 200px; }
-  .sidebar h2 { font-size: 1.1rem; }
+  .sidebar h2 { 
+    font-size: 1.1rem; 
+    justify-content: center;
+  }
 }
+
 
 @media (max-width: 768px) {
   .app-container { flex-direction: column; }
@@ -462,7 +468,7 @@ input:checked + .slider:before {
   .sidebar h2 { 
     margin: 0; 
     text-align: center;
-    font-size: 1.2rem;
+    font-size: 2rem;
   }
 
   .sidebar nav { 
@@ -476,7 +482,9 @@ input:checked + .slider:before {
     gap: 0.5rem;
     overflow-x: auto;
     padding-bottom: 0.5rem;
-    scrollbar-width: none; /* Firefox */
+    scrollbar-width: none;
+    justify-content: center;
+    padding-left: 0;
   }
 
   .sidebar nav ul::-webkit-scrollbar { display: none; } /* Chrome/Safari */
@@ -501,7 +509,6 @@ input:checked + .slider:before {
     margin-left: 0;
     padding: 1.5rem;
   }
-...
   header {
     flex-direction: column;
     align-items: flex-start;
