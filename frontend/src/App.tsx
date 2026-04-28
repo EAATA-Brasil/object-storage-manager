@@ -469,34 +469,35 @@ function App() {
         {view === "bucket-configs" && selectedAccount && selectedBucket && (
           <>
             <header>
-              <button className="btn-back" onClick={() => navigateTo(`/account/${selectedAccount.id}/buckets`)}>← Voltar</button>
-              <h1>Detalhes: {selectedBucket}</h1>
-              <div className="header-actions" style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#64748b' }}>Acesso Global:</label>
+              <div className="header-title-row">
+                <button className="btn-back" onClick={() => navigateTo(`/account/${selectedAccount.id}/buckets`)}>← Voltar</button>
+                <h1>{selectedBucket}</h1>
+              </div>
+              <div className="header-actions">
+                <div className="header-action-item">
+                  <label>Acesso:</label>
                   <select 
                     value={bucketAccessPolicy} 
                     onChange={e => handleUpdateBucketAccessPolicy(e.target.value)}
-                    style={{ padding: '4px 8px', borderRadius: '6px', fontSize: '0.85rem' }}
                   >
                     <option value="private">🔒 Privado</option>
                     <option value="public">🌐 Público</option>
-                    <option value="custom">🛠️ Customizado</option>
+                    <option value="custom">🛠️ Custom</option>
                   </select>
                   {bucketAccessPolicy === 'custom' && (
-                    <button className="btn-link" style={{fontSize: '0.75rem'}} onClick={() => {
+                    <button className="btn-link-sm" onClick={() => {
                       setCustomPolicyTarget({ type: 'bucket' });
                       setTempCustomPerms(bucketCustomPolicy || { "s3:GetObject": true, "s3:PutObject": false, "s3:DeleteObject": false, "s3:ListBucket": false });
                       setShowCustomPolicyModal(true);
-                    }}>⚙️ Configurar</button>
+                    }}>⚙️</button>
                   )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div className="header-action-item">
                   <label className="switch">
                     <input type="checkbox" checked={versioningEnabled} onChange={toggleVersioning} />
                     <span className="slider slider-cyan round"></span>
                   </label>
-                  <span style={{ fontSize: '0.9rem' }}>Versioning</span>
+                  <span>Versioning</span>
                 </div>
               </div>
             </header>
