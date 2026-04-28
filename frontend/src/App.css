@@ -391,3 +391,80 @@ input:checked + .slider:before {
   color: #64748b;
   font-size: 0.8rem;
 }
+
+/* RESPONSIVIDADE */
+
+@media (max-width: 1024px) {
+  :root { --sidebar-w: 80px; }
+  .sidebar h2 span { display: none; }
+  .sidebar nav li span { display: none; }
+  .sidebar nav li { display: flex; justify-content: center; padding: 1rem; }
+  .sidebar h2 { justify-content: center; margin-bottom: 2rem; }
+}
+
+@media (max-width: 768px) {
+  .app-container { flex-direction: column; }
+  
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: relative;
+    padding: 1rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .sidebar h2 { margin: 0; }
+  .sidebar nav { display: none; } /* Pode ser melhorado com um menu sanduíche */
+  
+  .content {
+    margin-left: 0;
+    padding: 1.5rem;
+  }
+
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1.5rem;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .analytics-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row {
+    flex-direction: column;
+    gap: 1rem !important;
+  }
+
+  .card-actions {
+    flex-direction: column;
+  }
+
+  .btn-primary, .btn-secondary, .btn-danger {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .folder-breakdown, .bucket-list {
+    overflow-x: auto;
+  }
+
+  .modal {
+    padding: 1.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  h1 { font-size: 1.5rem; }
+  .stat-value { font-size: 1.8rem; }
+  .config-section { padding: 1.5rem; }
+}
+

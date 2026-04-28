@@ -393,12 +393,22 @@ function App() {
   return (
     <div className="app-container">
       <aside className="sidebar">
-        <h2 onClick={() => navigateTo("/")} style={{cursor: 'pointer'}}>Storage Manager</h2>
-        <nav>
-          <ul>
+        <h2 onClick={() => navigateTo("/")} style={{cursor: 'pointer'}}>🚀 <span>Manager</span></h2>
+        <nav style={{display: 'block'}}>
+          <ul style={{listStyle: 'none', padding: 0}}>
             <li className={view === "accounts" ? "active" : ""} onClick={() => navigateTo("/")}>
-              📦 Contas
+              📦 <span>Contas</span>
             </li>
+            {selectedAccount && (
+              <li className={view === "buckets" ? "active" : ""} onClick={() => navigateTo(`/account/${selectedAccount.id}/buckets`)}>
+                🪣 <span>Buckets</span>
+              </li>
+            )}
+            {selectedBucket && (
+              <li className={view === "bucket-configs" ? "active" : ""} onClick={() => {}}>
+                ⚙️ <span>{selectedBucket}</span>
+              </li>
+            )}
           </ul>
         </nav>
       </aside>

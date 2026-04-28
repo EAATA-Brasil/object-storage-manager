@@ -10,7 +10,7 @@ import {
   setBucketNotification,
   getBucketVersioning,
   setBucketVersioning,
-  updatePublicPrefixesPolicy
+  updateBucketAccessPolicy
 } from "../services/s3";
 
 const router = Router();
