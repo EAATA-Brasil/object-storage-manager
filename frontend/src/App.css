@@ -312,14 +312,23 @@ tr:hover td { background: #fbfcfe; }
 }
 
 .config-section h2 { font-size: 1.5rem; font-weight: 800; margin: 0 0 2rem 0; color: var(--slate-900); }
-
 .analytics-summary {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 2rem;
   margin-bottom: 2.5rem;
 }
 
+.stat-card.optimized-card {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.stat-card.optimized-card .stat-value {
+  color: #166534;
+}
+
+/* MODAL */
 .stat-card {
   background: #f8fafc;
   padding: 2rem;
@@ -496,7 +505,7 @@ input:checked + .slider:before {
   header {
     flex-direction: column;
     align-items: flex-start;
-    gap: 1.5rem;
+    gap: 1rem;
     margin-bottom: 2rem;
   }
 
@@ -516,7 +525,7 @@ input:checked + .slider:before {
   .header-actions {
     width: 100%;
     background: white;
-    padding: 1.25rem;
+    padding: 1rem;
     border-radius: 1rem;
     border: 1px solid var(--slate-200);
     display: flex;
@@ -524,6 +533,7 @@ input:checked + .slider:before {
     align-items: center;
     gap: 1rem;
     box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+    margin-top: 0.5rem;
   }
 
   .header-action-item {

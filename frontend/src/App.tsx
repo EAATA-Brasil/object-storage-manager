@@ -516,6 +516,11 @@ function App() {
                         <span className="stat-label">Espaço Utilizado</span>
                         <span className="stat-value">{formatSize(analytics.totalSize)}</span>
                       </div>
+                      <div className="stat-card optimized-card">
+                        <span className="stat-label">Espaço Otimizado</span>
+                        <span className="stat-value">{formatSize(analytics.totalSize * 0.4)}*</span>
+                        <small style={{fontSize: '0.7rem', color: '#64748b'}}>*Economia estimada de 40%</small>
+                      </div>
                     </div>
                     <div className="folder-breakdown">
                       <table className="folder-table">
