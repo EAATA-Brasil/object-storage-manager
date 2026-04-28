@@ -70,36 +70,12 @@ services:
       MINIO_SECRET_KEY: f84Ffo6fTM
       MAX_CONCURRENCY: 1
       BATCH_SLEEP_MS: 100
-    depends_on:
-      - minio
-    networks:
-      - root_eaata-net
-
-  minio:
-    image: minio/minio:latest
-    container_name: minio
-    restart: unless-stopped
-    command: server /data --address ":9005" --console-address ":9006"
-    environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: f84Ffo6fTM
-      MINIO_SERVER_URL: "https://eaatamin.ddns.net"
-      MINIO_BROWSER_REDIRECT_URL: "https://eaatamin.ddns.net/console"
-      MINIO_SUBNET_LICENSE: "eyJhbGciOiJFUzM4NCIsInR5cCI6IkpXVCJ9.eyJhaWQiOjAsImNhcCI6MCwiaWF0IjoxLjc3MDMyNTk2NzIwNDY1MTg3N2U5LCJpc3MiOiJzdWJuZXRAbWluLmlvIiwibGlkIjoiMTIzNDZhYzUtOTUzOS00M2M2LWJjMGEtYmY2MWEzMWRkNzhjIiwib3JnIjoiIiwicGxhbiI6IkZSRUUiLCJzdWIiOiJkZXZAZWFhdGEucHJvIiwidHJpYWwiOmZhbHNlfQ.eXKmUG8lFiZ3h2liGZoZ9M8z-dQp-Ggo7SJJAmlE_kmO_dTKVnQf3tjPWe5KshKL0jn7DJ7abS4kqdsU2ix7fH336uhsITMcwZlj7yppQJClw_tg90nnyjvc-AXt4_5c"
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9005:9005"
-      - "9006:9006"
     networks:
       - root_eaata-net
 
   minio-setup:
     image: minio/mc
     container_name: object-storage-mc-setup
-    depends_on:
-      - minio
-      - optimizer
     volumes:
       - ./setup-minio.sh:/setup-minio.sh
     entrypoint: ["/bin/sh", "/setup-minio.sh"]
@@ -116,5 +92,4 @@ networks:
     external: true
 
 volumes:
-  minio_data:
   db_data:
