@@ -393,9 +393,9 @@ function App() {
   return (
     <div className="app-container">
       <aside className="sidebar">
-        <h2 onClick={() => navigateTo("/")} style={{cursor: 'pointer'}}>🚀 <span>Manager</span></h2>
-        <nav style={{display: 'block'}}>
-          <ul style={{listStyle: 'none', padding: 0}}>
+        <h2 onClick={() => navigateTo("/")} style={{cursor: 'pointer'}}>Storage Manager</h2>
+        <nav>
+          <ul>
             <li className={view === "accounts" ? "active" : ""} onClick={() => navigateTo("/")}>
               📦 <span>Contas</span>
             </li>
