@@ -6,6 +6,7 @@ import subprocess
 import asyncio
 import time
 import threading
+import requests
 from urllib.parse import unquote_plus
 
 from fastapi import FastAPI, Request, Query
@@ -53,12 +54,6 @@ VIDEO_MAX_WIDTH = int(os.getenv("VIDEO_MAX_WIDTH", "1280"))
 VIDEO_CRF = os.getenv("VIDEO_CRF", "28")
 VIDEO_PRESET = os.getenv("VIDEO_PRESET", "veryfast")
 AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "96k")
-
-# Batch / Performance (fallback)
-MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "1"))
-BATCH_SLEEP_MS = int(os.getenv("BATCH_SLEEP_MS", "0"))
-MIN_SIZE_KB = int(os.getenv("MIN_SIZE_KB", "0"))
-VIDEO_MAX_MB = int(os.getenv("VIDEO_MAX_MB", "0"))
 
 # Anti-loop (metadata)
 META_OPT_KEY = "optimized"
@@ -127,6 +122,21 @@ def metrics():
 
 def log(msg: str):
     print(msg, flush=True)
+
+def log_optimization(storage_id: str, bucket: str, file_key: str, file_type: str, before: int, after: int):
+    """Envia o log de processamento para o banco de dados via backend."""
+    try:
+        payload = {
+            "file_key": file_key,
+            "file_type": file_type,
+            "bytes_before": before,
+            "bytes_after": after
+        }
+        url = f"{MANAGER_BASE_URL}/api/accounts/{storage_id}/buckets/{bucket}/log-processed"
+        requests.post(url, json=payload, timeout=5)
+        log(f"[LOG] Estatisticas enviadas para {file_key} ({before} -> {after})")
+    except Exception as e:
+        log(f"[LOG] Falha ao enviar estatisticas: {e}")
 
 
 @app.on_event("startup")
@@ -425,7 +435,7 @@ def passes_prefix_rules(key: str, cfg: dict | None) -> bool:
 # Core processing
 # =========================
 
-def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None) -> tuple[bool, str, str]:
+def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None, storage_id: str = DEFAULT_STORAGE_ID) -> tuple[bool, str, str]:
     if not key:
         return (False, "no_key", "other")
 
@@ -483,7 +493,8 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None) -> t
                 log(f"[FAIL] download_failed {bucket}/{key} err={e}")
                 return (False, "download_failed", media)
 
-            BYTES_BEFORE.labels(media).inc(len(src_bytes))
+            before_size = len(src_bytes)
+            BYTES_BEFORE.labels(media).inc(before_size)
 
             img_params = (cfg or {}).get("image") or {}
             try:
@@ -492,10 +503,12 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None) -> t
                 log(f"[FAIL] optimize_failed {bucket}/{key} err={e}")
                 return (False, "optimize_failed", media)
 
-            if len(out_bytes) >= int(len(src_bytes) * 0.98):
-                log(f"[IMG] no_gain_keep_original {bucket}/{key} size={len(src_bytes)}")
+            after_size = len(out_bytes)
+            if after_size >= int(before_size * 0.98):
+                log(f"[IMG] no_gain_keep_original {bucket}/{key} size={before_size}")
                 OPT_NOGAIN.labels(media).inc()
-                BYTES_AFTER.labels(media).inc(len(src_bytes))
+                BYTES_AFTER.labels(media).inc(before_size)
+                after_size = before_size # Consideramos igual
                 try:
                     mark_optimized_server_side(client, bucket, key)
                 except Exception as e:
@@ -508,8 +521,11 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None) -> t
                     log(f"[FAIL] upload_failed {bucket}/{key} err={e}")
                     return (False, "upload_failed", media)
 
-                BYTES_AFTER.labels(media).inc(len(out_bytes))
-                log(f"[IMG] done {bucket}/{key} before={len(src_bytes)} after={len(out_bytes)}")
+                BYTES_AFTER.labels(media).inc(after_size)
+                log(f"[IMG] done {bucket}/{key} before={before_size} after={after_size}")
+
+            # Log para o Banco de Dados
+            log_optimization(storage_id, bucket, key, media, before_size, after_size)
 
             if work_key:
                 delete_quiet(client, bucket, work_key)
@@ -546,23 +562,27 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None) -> t
                 in_path = download_to_tempfile(client, bucket, key, suffix=ext)
                 out_path = tempfile.mktemp(suffix=".mp4")
 
-                src_size = os.path.getsize(in_path)
-                BYTES_BEFORE.labels(media).inc(src_size)
+                before_size = os.path.getsize(in_path)
+                BYTES_BEFORE.labels(media).inc(before_size)
 
                 video_params = (cfg or {}).get("video") or {}
                 ffmpeg_transcode(in_path, out_path, video_params)
 
-                out_size = os.path.getsize(out_path)
+                after_size = os.path.getsize(out_path)
 
-                if out_size >= int(src_size * 0.98):
-                    log(f"[VID] no_gain_keep_original {bucket}/{key} size={src_size}")
+                if after_size >= int(before_size * 0.98):
+                    log(f"[VID] no_gain_keep_original {bucket}/{key} size={before_size}")
                     OPT_NOGAIN.labels(media).inc()
-                    BYTES_AFTER.labels(media).inc(src_size)
+                    BYTES_AFTER.labels(media).inc(before_size)
+                    after_size = before_size
                     mark_optimized_server_side(client, bucket, key)
                 else:
                     put_with_meta_file(client, bucket, key, out_path, "video/mp4")
-                    BYTES_AFTER.labels(media).inc(out_size)
-                    log(f"[VID] done {bucket}/{key} before={src_size} after={out_size}")
+                    BYTES_AFTER.labels(media).inc(after_size)
+                    log(f"[VID] done {bucket}/{key} before={before_size} after={after_size}")
+
+                # Log para o Banco de Dados
+                log_optimization(storage_id, bucket, key, media, before_size, after_size)
 
                 return (True, "ok", media)
 
@@ -660,7 +680,7 @@ async def minio_webhook(req: Request, storage_id: str = Query(default=DEFAULT_ST
         client = client_for_storage(storage_id)
 
         try:
-            ok, reason, media = await asyncio.to_thread(process_one_key, client, bkt, key, cfg)
+            ok, reason, media = await asyncio.to_thread(process_one_key, client, bkt, key, cfg, storage_id)
 
             if ok:
                 processed += 1
@@ -736,7 +756,7 @@ async def batch_optimize(
                 return
 
             try:
-                ok, reason, media = await asyncio.to_thread(process_one_key, client, target_bucket, k, cfg)
+                ok, reason, media = await asyncio.to_thread(process_one_key, client, target_bucket, k, cfg, storage_id)
 
                 async with lock:
                     if ok:

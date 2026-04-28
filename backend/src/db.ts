@@ -71,4 +71,18 @@ export async function initDB() {
   try {
     await pool.query("ALTER TABLE bucket_optimizer_configs ADD COLUMN custom_policy TEXT");
   } catch (e) {}
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS processed_files (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      storage_account_id VARCHAR(36) NOT NULL,
+      bucket_name VARCHAR(255) NOT NULL,
+      file_key TEXT NOT NULL,
+      file_type VARCHAR(50),
+      bytes_before BIGINT,
+      bytes_after BIGINT,
+      optimized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE
+    )
+  `);
 }

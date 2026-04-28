@@ -106,6 +106,7 @@ function App() {
   const [versioningEnabled, setVersioningEnabled] = useState(false);
   const [bucketAccessPolicy, setBucketAccessPolicy] = useState("private");
   const [bucketCustomPolicy, setBucketCustomPolicy] = useState<any>(null);
+  const [optimizerStats, setOptimizerStats] = useState({ count: 0, total_before: 0, total_after: 0, bytes_saved: 0 });
   const [showCustomPolicyModal, setShowCustomPolicyModal] = useState(false);
   const [customPolicyTarget, setCustomPolicyTarget] = useState<{type: 'bucket' | 'folder', id?: number} | null>(null);
   const [tempCustomPerms, setTempCustomPerms] = useState({
@@ -184,12 +185,13 @@ function App() {
     setLoadingConfigs(true);
     setLoadingOptimizer(true);
     try {
-      const [resAnlytics, resLifecycle, resOptimizer, resVersioning, resPolicy] = await Promise.all([
+      const [resAnlytics, resLifecycle, resOptimizer, resVersioning, resPolicy, resStats] = await Promise.all([
         fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/analytics`),
         fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/lifecycle`),
         fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/optimizer`),
         fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/versioning`),
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/access-policy`)
+        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/access-policy`),
+        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/optimizer-stats`)
       ]);
       if (resAnlytics.ok) setAnalytics(await resAnlytics.json());
       if (resLifecycle.ok) setLifecycle(await resLifecycle.json());
@@ -202,6 +204,9 @@ function App() {
         const pData = await resPolicy.json();
         setBucketAccessPolicy(pData.policy);
         setBucketCustomPolicy(pData.custom);
+      }
+      if (resStats.ok) {
+        setOptimizerStats(await resStats.json());
       }
     } catch (error) { console.error(error); } finally { setLoadingConfigs(false); setLoadingOptimizer(false); }
   };
@@ -518,8 +523,8 @@ function App() {
                       </div>
                       <div className="stat-card optimized-card">
                         <span className="stat-label">Espaço Otimizado</span>
-                        <span className="stat-value">{formatSize(analytics.totalSize * 0.4)}*</span>
-                        <small style={{fontSize: '0.7rem', color: '#64748b'}}>*Economia estimada de 40%</small>
+                        <span className="stat-value">{formatSize(optimizerStats.bytes_saved)}</span>
+                        <small style={{fontSize: '0.7rem', color: '#64748b'}}>{optimizerStats.count} arquivos processados</small>
                       </div>
                     </div>
                     <div className="folder-breakdown">

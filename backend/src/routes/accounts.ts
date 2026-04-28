@@ -392,6 +392,46 @@ router.delete("/:id/buckets/:bucketName/optimizer/:configId", async (req, res) =
   }
 });
 
+router.get("/:id/buckets/:bucketName/optimizer-stats", async (req, res) => {
+  const { id, bucketName } = req.params;
+  try {
+    const [rows]: any = await pool.query(`
+      SELECT 
+        COUNT(*) as count,
+        SUM(bytes_before) as total_before,
+        SUM(bytes_after) as total_after
+      FROM processed_files 
+      WHERE storage_account_id = ? AND bucket_name = ?
+    `, [id, bucketName]);
+    
+    const stats = rows[0];
+    const saved = (stats.total_before || 0) - (stats.total_after || 0);
+    
+    res.json({
+      count: stats.count || 0,
+      total_before: stats.total_before || 0,
+      total_after: stats.total_after || 0,
+      bytes_saved: saved > 0 ? saved : 0
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/:id/buckets/:bucketName/log-processed", async (req, res) => {
+  const { id, bucketName } = req.params;
+  const { file_key, file_type, bytes_before, bytes_after } = req.body;
+  try {
+    await pool.query(`
+      INSERT INTO processed_files (storage_account_id, bucket_name, file_key, file_type, bytes_before, bytes_after)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [id, bucketName, file_key, file_type, bytes_before, bytes_after]);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Trigger Batch Optimization
 router.post("/:id/buckets/:bucketName/optimizer/:configId/run-batch", async (req, res) => {
   const { id, bucketName } = req.params;
