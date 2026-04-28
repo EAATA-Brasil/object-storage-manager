@@ -660,7 +660,7 @@ function App() {
                     {optimizerConfigs.length === 0 ? <p>Nenhuma pasta configurada para o optimizer.</p> : (
                       <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
                         {optimizerConfigs.map((config) => (
-                          <div key={config.id} className="rule-card" style={{borderLeft: config.enabled ? '4px solid #10b981' : '4px solid #ef4444'}}>
+                          <div key={config.id} className="rule-card" style={{borderLeft: config.enabled ? '4px solid #10b981' : '4px solid #ef4444', paddingLeft: '10px'}}>
                             <div className="rule-info">
                               <p><strong>{config.prefix_root}</strong> {config.enabled ? <span style={{color: '#10b981', fontSize: '0.8rem'}}>(Ativo)</span> : <span style={{color: '#ef4444', fontSize: '0.8rem'}}>(Pausado)</span>}</p>
                               <p style={{fontSize: '0.8rem', color: '#64748b'}}>Trabalho: <code>{config.prefix_work}</code></p>
