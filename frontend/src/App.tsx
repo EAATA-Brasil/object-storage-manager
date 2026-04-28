@@ -166,7 +166,7 @@ function App() {
 
   const fetchAccounts = async () => {
     try {
-      const response = await fetch("http://localhost:3005/api/accounts");
+      const response = await fetch("/api/accounts");
       const data = await response.json();
       setAccounts(data);
     } catch (error) { console.error(error); } finally { setLoading(false); }
@@ -375,14 +375,14 @@ function App() {
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("http://localhost:3005/api/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData) });
+      const res = await fetch("/api/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData) });
       if (res.ok) { setShowForm(false); fetchAccounts(); }
     } catch (error) { alert("Erro"); }
   };
 
   const handleDeleteAccount = async (id: string) => {
     if (!confirm("Excluir conta?")) return;
-    try { await fetch("http://localhost:3005/api/accounts/" + id, { method: "DELETE" }); fetchAccounts(); } catch (error) { alert("Erro"); }
+    try { await fetch("/api/accounts/" + id, { method: "DELETE" }); fetchAccounts(); } catch (error) { alert("Erro"); }
   };
 
   const formatSize = (bytes: number) => {
