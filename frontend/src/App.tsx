@@ -175,7 +175,7 @@ function App() {
   const fetchBuckets = async (account: StorageAccount) => {
     setLoadingBuckets(true);
     try {
-      const response = await fetch(`http://localhost:3005/api/accounts/${account.id}/buckets`);
+      const response = await fetch(`/api/accounts/${account.id}/buckets`);
       const data = await response.json();
       if (response.ok) setBuckets(data);
     } catch (error) { console.error(error); } finally { setLoadingBuckets(false); }
@@ -186,12 +186,12 @@ function App() {
     setLoadingOptimizer(true);
     try {
       const [resAnlytics, resLifecycle, resOptimizer, resVersioning, resPolicy, resStats] = await Promise.all([
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/analytics`),
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/lifecycle`),
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/optimizer`),
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/versioning`),
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/access-policy`),
-        fetch(`http://localhost:3005/api/accounts/${accId}/buckets/${bucketName}/optimizer-stats`)
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/analytics`),
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/lifecycle`),
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/optimizer`),
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/versioning`),
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/access-policy`),
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/optimizer-stats`)
       ]);
       if (resAnlytics.ok) setAnalytics(await resAnlytics.json());
       if (resLifecycle.ok) setLifecycle(await resLifecycle.json());
@@ -221,7 +221,7 @@ function App() {
       return;
     }
     try {
-      const res = await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/access-policy`, {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/access-policy`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ policy: newPolicy }),
@@ -240,7 +240,7 @@ function App() {
 
     if (customPolicyTarget.type === 'bucket') {
       try {
-        const res = await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/access-policy`, {
+        const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/access-policy`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ policy: 'custom', custom: tempCustomPerms }),
@@ -262,7 +262,7 @@ function App() {
     if (!selectedAccount || !selectedBucket) return;
     const newState = !versioningEnabled;
     try {
-      const res = await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/versioning`, {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/versioning`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: newState }),
@@ -283,7 +283,7 @@ function App() {
     const ruleToAdd = { ID: newRule.id || `Rule-${Date.now()}`, Status: newRule.status, Filter: { Prefix: newRule.prefix }, Expiration: { Days: Number(newRule.days) } };
     const updatedRules = [...(lifecycle?.Rules || []), ruleToAdd];
     try {
-      const res = await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/lifecycle`, {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/lifecycle`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: updatedRules }),
       });
       if (res.ok) { setShowLifecycleForm(false); setNewRule({ id: "", prefix: "", days: 30, status: "Enabled" }); loadBucketConfigs(selectedAccount.id, selectedBucket); }
@@ -294,7 +294,7 @@ function App() {
     if (!selectedAccount || !selectedBucket || !confirm("Remover?")) return;
     const updatedRules = (lifecycle?.Rules || []).filter((r: any) => r.ID !== ruleId);
     try {
-      await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/lifecycle`, {
+      await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/lifecycle`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: updatedRules }),
       });
       loadBucketConfigs(selectedAccount.id, selectedBucket);
@@ -305,10 +305,9 @@ function App() {
     e.preventDefault();
     if (!selectedAccount || !selectedBucket) return;
     try {
-      const url = editingOptimizer 
-        ? `http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${editingOptimizer.id}`
-        : `http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer`;
-      const method = editingOptimizer ? "PUT" : "POST";
+      const url = editingOptimizer
+              ? `/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${editingOptimizer.id}`
+              : `/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer`;      const method = editingOptimizer ? "PUT" : "POST";
 
       const res = await fetch(url, {
         method, 
@@ -327,7 +326,7 @@ function App() {
   const handleDeleteOptimizer = async (configId: number) => {
     if (!selectedAccount || !selectedBucket || !confirm("Remover esta configuração?")) return;
     try {
-      await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${configId}`, {
+      await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${configId}`, {
         method: "DELETE"
       });
       loadBucketConfigs(selectedAccount.id, selectedBucket);
@@ -339,7 +338,7 @@ function App() {
     if (!confirm(`Deseja iniciar a varredura (batch) na pasta ${prefix}?`)) return;
     
     try {
-      const res = await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${configId}/run-batch`, {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${configId}/run-batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prefix })
@@ -358,7 +357,7 @@ function App() {
     const updated = { ...config, auto_lifecycle: !config.auto_lifecycle };
     
     try {
-      const res = await fetch(`http://localhost:3005/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${config.id}`, {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${config.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updated),
