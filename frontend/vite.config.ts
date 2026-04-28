@@ -8,6 +8,12 @@ export default defineConfig({
     host: true,
     port: 5173,
     allowedHosts: ["2yx4m1a3.eaata.pro"],
+    proxy: {
+      '/api': {
+        target: 'http://backend:3005',
+        changeOrigin: true,
+      }
+    },
     watch: {
       usePolling: true,
     },

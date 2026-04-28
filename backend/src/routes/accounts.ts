@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { pool } from "../db";
+import { pool, getManagerInstanceId } from "../db";
 import { v4 as uuidv4 } from "uuid";
 import { 
   createS3Client, 
@@ -7,6 +7,7 @@ import {
   getBucketAnalytics, 
   getBucketLifecycle, 
   setBucketLifecycle, 
+  getBucketNotification,
   setBucketNotification,
   getBucketVersioning,
   setBucketVersioning,
@@ -73,6 +74,48 @@ async function setupBucketPolicy(storageId: string, bucketName: string) {
     console.log(`Bucket policy updated for ${bucketName} (Global: ${account.access_policy}, Folders: ${folderConfigs.length})`);
   } catch (err) {
     console.error(`Bucket policy update FAILED for ${bucketName}:`, err);
+  }
+}
+
+async function syncOptimizerConfigToS3(storageId: string, bucketName: string, forceOwnerUrl?: string) {
+  try {
+    const [rows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [storageId]);
+    const account = rows[0];
+    if (!account) return;
+
+    const [configs]: any = await pool.query(
+      "SELECT * FROM bucket_optimizer_configs WHERE storage_account_id = ? AND bucket_name = ?",
+      [storageId, bucketName]
+    );
+
+    const client = createS3Client({
+      endpoint: account.endpoint,
+      accessKeyId: account.access_key,
+      secretAccessKey: account.secret_key,
+      region: account.region,
+    });
+
+    const managerId = await getManagerInstanceId();
+
+    // Wrapper com ID ÚNICO da instância
+    const persistenceData = {
+      version: 1,
+      manager_id: managerId,
+      last_sync_owner: forceOwnerUrl || process.env.PUBLIC_OPTIMIZER_URL || "unknown",
+      configs: configs
+    };
+
+    const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+    await client.send(new PutObjectCommand({
+      Bucket: bucketName,
+      Key: ".manager-config/optimizer.json",
+      Body: JSON.stringify(persistenceData, null, 2),
+      ContentType: "application/json"
+    }));
+
+    console.log(`Optimizer config persisted to S3 for ${bucketName} (ManagerID: ${managerId})`);
+  } catch (err) {
+    console.error(`S3 persistence FAILED for ${bucketName}:`, err);
   }
 }
 
@@ -296,11 +339,64 @@ router.put("/:id/buckets/:bucketName/lifecycle", async (req, res) => {
 router.get("/:id/buckets/:bucketName/optimizer", async (req, res) => {
   const { id, bucketName } = req.params;
   try {
+    // 1. Tenta buscar do banco local
     const [rows]: any = await pool.query(
       "SELECT * FROM bucket_optimizer_configs WHERE storage_account_id = ? AND bucket_name = ?",
       [id, bucketName]
     );
-    res.json(rows);
+    
+    if (rows.length > 0) {
+      return res.json(rows);
+    }
+
+    // 2. Se não tem no banco, tenta buscar no S3 (Auto-discovery)
+    const [accRows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [id]);
+    const account = accRows[0];
+    if (!account) return res.json([]);
+
+    const client = createS3Client({
+      endpoint: account.endpoint,
+      accessKeyId: account.access_key,
+      secretAccessKey: account.secret_key,
+      region: account.region,
+    });
+
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+    try {
+      const s3Response = await client.send(new GetObjectCommand({
+        Bucket: bucketName,
+        Key: ".manager-config/optimizer.json"
+      }));
+      
+      const bodyContents = await s3Response.Body?.transformToString();
+      if (bodyContents) {
+        const remoteConfigs = JSON.parse(bodyContents);
+        console.log(`Auto-discovered ${remoteConfigs.length} optimizer configs in S3 for ${bucketName}. Importing...`);
+        
+        // 3. Importa para o banco local
+        for (const cfg of remoteConfigs) {
+          await pool.query(`
+            INSERT IGNORE INTO bucket_optimizer_configs 
+            (storage_account_id, bucket_name, enabled, prefix_root, prefix_work, min_size_kb, video_max_mb, auto_lifecycle, access_policy, custom_policy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [id, bucketName, cfg.enabled, cfg.prefix_root, cfg.prefix_work, cfg.min_size_kb, cfg.video_max_mb, cfg.auto_lifecycle, cfg.access_policy, cfg.custom_policy]);
+        }
+
+        // Retorna os dados recém-importados
+        const [newRows]: any = await pool.query(
+          "SELECT * FROM bucket_optimizer_configs WHERE storage_account_id = ? AND bucket_name = ?",
+          [id, bucketName]
+        );
+        return res.json(newRows);
+      }
+    } catch (s3Err: any) {
+      // Arquivo não existe no S3, tudo bem
+      if (s3Err.name !== 'NoSuchKey') {
+        console.warn(`S3 Discovery error for ${bucketName}:`, s3Err.message);
+      }
+    }
+
+    res.json([]);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -327,7 +423,19 @@ router.post("/:id/buckets/:bucketName/optimizer", async (req, res) => {
       console.log(`Enabling auto-lifecycle for ${bucketName}/${prefix_work}`);
       await setupAutoLifecycle(id, bucketName, prefix_work, true);
     }
+
+    // NOVO: Aplica a política de acesso definida no Optimizer à pasta TEMP (prefix_work)
+    if (access_policy) {
+      await pool.query(`
+        INSERT INTO bucket_folder_policies (storage_account_id, bucket_name, folder_prefix, policy, custom_policy)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE policy = VALUES(policy), custom_policy = VALUES(custom_policy)
+      `, [id, bucketName, prefix_work, access_policy, custom_policy ? JSON.stringify(custom_policy) : null]);
+      
+      await setupBucketPolicy(id, bucketName);
+    }
     
+    await syncOptimizerConfigToS3(id, bucketName);
     res.json({ success: true });
   } catch (err: any) {
     console.error("CRITICAL ERROR in POST /optimizer:", err);
@@ -367,6 +475,18 @@ router.put("/:id/buckets/:bucketName/optimizer/:configId", async (req, res) => {
     // Configura ou remove o ciclo de vida automático
     await setupAutoLifecycle(id, bucketName, prefix_work, !!auto_lifecycle);
 
+    // NOVO: Aplica a política de acesso definida no Optimizer à pasta TEMP (prefix_work)
+    if (access_policy) {
+      await pool.query(`
+        INSERT INTO bucket_folder_policies (storage_account_id, bucket_name, folder_prefix, policy, custom_policy)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE policy = VALUES(policy), custom_policy = VALUES(custom_policy)
+      `, [id, bucketName, prefix_work, access_policy, custom_policy ? JSON.stringify(custom_policy) : null]);
+      
+      await setupBucketPolicy(id, bucketName);
+    }
+
+    await syncOptimizerConfigToS3(id, bucketName);
     res.json({ success: true });
   } catch (err: any) {
     console.error("Error updating optimizer config:", err);
@@ -385,6 +505,7 @@ router.delete("/:id/buckets/:bucketName/optimizer/:configId", async (req, res) =
     // Atualiza política de acesso
     await setupBucketPolicy(id, bucketName);
 
+    await syncOptimizerConfigToS3(id, bucketName);
     res.json({ success: true });
   } catch (err: any) {
     console.error("Error deleting optimizer config:", err);
@@ -432,6 +553,80 @@ router.post("/:id/buckets/:bucketName/log-processed", async (req, res) => {
   }
 });
 
+// Sync entire bucket optimizer infrastructure
+router.post("/:id/buckets/:bucketName/optimizer-sync-infra", async (req, res) => {
+  const { id, bucketName } = req.params;
+  try {
+    const [configs]: any = await pool.query(
+      "SELECT * FROM bucket_optimizer_configs WHERE storage_account_id = ? AND bucket_name = ?",
+      [id, bucketName]
+    );
+
+    if (configs.length === 0) {
+      return res.status(404).json({ error: "No optimizer configs found to sync" });
+    }
+
+    // 1. Reconfigura notificações (aponta para este ambiente)
+    await setupOptimizerNotification(id, bucketName);
+
+    // 2. Reconfigura políticas de acesso
+    await setupBucketPolicy(id, bucketName);
+
+    // 3. Reconfigura lifecycles para cada pasta
+    for (const cfg of configs) {
+      await setupAutoLifecycle(id, bucketName, cfg.prefix_work, !!cfg.auto_lifecycle);
+    }
+
+    // 4. Registra este ambiente como o novo dono no S3
+    await syncOptimizerConfigToS3(id, bucketName);
+
+    res.json({ success: true, message: "Infrastructure synced to this environment" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sync status check
+router.get("/:id/buckets/:bucketName/optimizer-sync-status", async (req, res) => {
+  const { id, bucketName } = req.params;
+  try {
+    const [accRows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [id]);
+    const account = accRows[0];
+    if (!account) return res.json({ synced: false });
+
+    const client = createS3Client({
+      endpoint: account.endpoint,
+      accessKeyId: account.access_key,
+      secretAccessKey: account.secret_key,
+      region: account.region,
+    });
+
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+    try {
+      const s3Response = await client.send(new GetObjectCommand({
+        Bucket: bucketName,
+        Key: ".manager-config/optimizer.json"
+      }));
+      
+      const bodyContents = await s3Response.Body?.transformToString();
+      if (bodyContents) {
+        const remoteData = JSON.parse(bodyContents);
+        const myId = await getManagerInstanceId();
+        
+        // Validação DUPLA: ID da Instância e URL (opcional, ID é o mais forte)
+        const isSynced = remoteData.manager_id === myId;
+        return res.json({ synced: isSynced });
+      }
+    } catch (s3Err: any) {
+      //NoSuchKey etc
+    }
+
+    res.json({ synced: false });
+  } catch (err) {
+    res.json({ synced: false });
+  }
+});
+
 // Trigger Batch Optimization
 router.post("/:id/buckets/:bucketName/optimizer/:configId/run-batch", async (req, res) => {
   const { id, bucketName } = req.params;
@@ -455,6 +650,24 @@ router.post("/:id/buckets/:bucketName/optimizer/:configId/run-batch", async (req
   } catch (err: any) {
     console.error("Failed to trigger batch:", err);
     res.status(500).json({ error: "Failed to trigger batch optimization", details: err.message });
+  }
+});
+
+// Folder-specific policies
+router.post("/:id/buckets/:bucketName/folder-policy", async (req, res) => {
+  const { id, bucketName } = req.params;
+  const { prefix, policy, custom } = req.body;
+  try {
+    await pool.query(`
+      INSERT INTO bucket_folder_policies (storage_account_id, bucket_name, folder_prefix, policy, custom_policy)
+      VALUES (?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE policy = VALUES(policy), custom_policy = VALUES(custom_policy)
+    `, [id, bucketName, prefix, policy, custom ? JSON.stringify(custom) : null]);
+    
+    await setupBucketPolicy(id, bucketName);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

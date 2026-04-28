@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { initDB, pool } from "./db";
 import accountRoutes from "./routes/accounts";
+import replicationRoutes from "./routes/replication";
 
 dotenv.config();
 
@@ -14,6 +15,7 @@ app.use(express.json());
 
 // Rotas
 app.use("/api/accounts", accountRoutes);
+app.use("/api/replication", replicationRoutes);
 
 // Optimizer global config polling
 app.get("/api/storage/optimizer/config", async (_req, res) => {

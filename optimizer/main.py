@@ -59,6 +59,10 @@ AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "96k")
 META_OPT_KEY = "optimized"
 META_OPT_VAL = "1"
 
+# Performance
+MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "1"))
+BATCH_SLEEP_MS = int(os.getenv("BATCH_SLEEP_MS", "0"))
+
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VID_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 

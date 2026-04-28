@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import "./App.css";
+import ReplicationPanel from "./ReplicationPanel";
 
 interface StorageAccount {
   id: string;
@@ -7,6 +8,10 @@ interface StorageAccount {
   endpoint: string;
   region: string;
   provider: string;
+  replicationStatus?: {
+    isCluster: boolean;
+    hasBucketReplication: boolean;
+  };
 }
 
 interface Bucket {
@@ -33,12 +38,14 @@ const FolderRow = ({
   depth, 
   onUseInLifecycle, 
   onUseInOptimizer,
+  onUpdateFolderPolicy,
   formatSize 
 }: { 
   node: FolderNode; 
   depth: number; 
   onUseInLifecycle: (path: string) => void;
   onUseInOptimizer: (path: string) => void;
+  onUpdateFolderPolicy: (path: string, policy: string) => void;
   formatSize: (b: number) => string;
 }) => {
   const [expanded, setExpanded] = useState(false);
@@ -59,14 +66,31 @@ const FolderRow = ({
         </td>
         <td>{node.count} arquivos</td>
         <td style={{ fontWeight: '700' }}>{formatSize(node.size)}</td>
-        <td>
-          <div style={{display: 'flex', gap: '10px'}}>
-            <button className="btn-link" onClick={() => onUseInLifecycle(node.fullPath)}>
-              + Lifecycle
-            </button>
-            <button className="btn-link" style={{color: '#0ea5e9'}} onClick={() => onUseInOptimizer(node.fullPath)}>
-              + Optimizer
-            </button>
+        <td className="folder-actions-cell">
+          <div className="folder-actions-wrapper">
+            <select 
+              className="select-sm folder-access-select" 
+              defaultValue="private" 
+              onChange={(e) => {
+                if (e.target.value === 'custom') {
+                  onUpdateFolderPolicy(node.fullPath, 'custom');
+                } else {
+                  onUpdateFolderPolicy(node.fullPath, e.target.value);
+                }
+              }}
+            >
+              <option value="private">🔒 Privado</option>
+              <option value="public">🌐 Público</option>
+              <option value="custom">🛠️ Custom</option>
+            </select>
+            <div className="folder-action-buttons">
+              <button className="btn-link" onClick={() => onUseInLifecycle(node.fullPath)}>
+                + Lifecycle
+              </button>
+              <button className="btn-link btn-link-blue" onClick={() => onUseInOptimizer(node.fullPath)}>
+                + Optimizer
+              </button>
+            </div>
           </div>
         </td>
       </tr>
@@ -75,6 +99,7 @@ const FolderRow = ({
           key={i} node={child} depth={depth + 1} 
           onUseInLifecycle={onUseInLifecycle} 
           onUseInOptimizer={onUseInOptimizer}
+          onUpdateFolderPolicy={onUpdateFolderPolicy}
           formatSize={formatSize}
         />
       ))}
@@ -92,13 +117,21 @@ function App() {
   const [route, setRoute] = useState(window.location.hash || "#/");
   const [selectedAccount, setSelectedAccount] = useState<StorageAccount | null>(null);
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
-  const [view, setView] = useState<"accounts" | "buckets" | "bucket-configs">("accounts");
+  const [view, setView] = useState<"accounts" | "buckets" | "bucket-configs" | "replication">("accounts");
 
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [loadingBuckets, setLoadingBuckets] = useState(false);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [lifecycle, setLifecycle] = useState<any>(null);
   const [optimizerConfigs, setOptimizerConfigs] = useState<any[]>([]);
+  
+  // Replicação
+  const [bucketReplicationRules, setBucketReplicationRules] = useState<any[]>([]);
+  const [loadingReplication, setLoadingReplication] = useState(false);
+  const [showReplicationForm, setShowReplicationForm] = useState(false);
+  const [newReplica, setNewReplica] = useState({ target_storage_id: "", target_bucket: "", priority: 1 });
+  const [targetBuckets, setTargetBuckets] = useState<string[]>([]);
+
   const [showOptimizerForm, setShowOptimizerForm] = useState(false);
   const [editingOptimizer, setEditingOptimizer] = useState<any>(null);
   const [loadingConfigs, setLoadingConfigs] = useState(false);
@@ -107,6 +140,7 @@ function App() {
   const [bucketAccessPolicy, setBucketAccessPolicy] = useState("private");
   const [bucketCustomPolicy, setBucketCustomPolicy] = useState<any>(null);
   const [optimizerStats, setOptimizerStats] = useState({ count: 0, total_before: 0, total_after: 0, bytes_saved: 0 });
+  const [infraSynced, setInfraSynced] = useState(false);
   const [showCustomPolicyModal, setShowCustomPolicyModal] = useState(false);
   const [customPolicyTarget, setCustomPolicyTarget] = useState<{type: 'bucket' | 'folder', id?: number} | null>(null);
   const [tempCustomPerms, setTempCustomPerms] = useState({
@@ -117,6 +151,7 @@ function App() {
   });
 
   const [newRule, setNewRule] = useState({ id: "", prefix: "", days: 30, status: "Enabled" });
+  const [editingLifecycleId, setEditingLifecycleId] = useState<string | null>(null);
   const [newOptimizer, setNewOptimizer] = useState({ 
     enabled: true, 
     prefix_root: "", 
@@ -143,13 +178,16 @@ function App() {
       setView("accounts");
       setSelectedAccount(null);
       setSelectedBucket(null);
+    } else if (route === "#/replication") {
+      setView("replication");
     } else if (parts[1] === "account" && parts[3] === "buckets") {
       const accId = parts[2];
       const acc = accounts.find(a => a.id === accId);
       if (acc) {
+        if (selectedAccount?.id !== accId) { setBuckets([]); setAnalytics(null); }
         setSelectedAccount(acc);
         setView("buckets");
-        if (buckets.length === 0) fetchBuckets(acc);
+        fetchBuckets(acc);
       }
     } else if (parts[1] === "account" && parts[3] === "bucket" && parts[4]) {
       const accId = parts[2];
@@ -164,11 +202,30 @@ function App() {
     }
   }, [route, accounts]);
 
+  useEffect(() => {
+    if (newReplica.target_storage_id) {
+      fetch(`/api/accounts/${newReplica.target_storage_id}/buckets`)
+        .then(res => res.json())
+        .then(data => setTargetBuckets(data.map((b: any) => b.Name)))
+        .catch(() => setTargetBuckets([]));
+    } else {
+      setTargetBuckets([]);
+    }
+  }, [newReplica.target_storage_id]);
+
   const fetchAccounts = async () => {
     try {
       const response = await fetch("/api/accounts");
       const data = await response.json();
-      setAccounts(data);
+      const accountsWithStatus = await Promise.all(data.map(async (acc: StorageAccount) => {
+        try {
+          const res = await fetch(`/api/replication/site/${acc.id}/info`);
+          return { ...acc, replicationStatus: { isCluster: res.ok, hasBucketReplication: false } };
+        } catch {
+          return acc;
+        }
+      }));
+      setAccounts(accountsWithStatus);
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
@@ -184,14 +241,17 @@ function App() {
   const loadBucketConfigs = async (accId: string, bucketName: string) => {
     setLoadingConfigs(true);
     setLoadingOptimizer(true);
+    setLoadingReplication(true);
     try {
-      const [resAnlytics, resLifecycle, resOptimizer, resVersioning, resPolicy, resStats] = await Promise.all([
+      const [resAnlytics, resLifecycle, resOptimizer, resVersioning, resPolicy, resStats, resReplication, resSyncStatus] = await Promise.all([
         fetch(`/api/accounts/${accId}/buckets/${bucketName}/analytics`),
         fetch(`/api/accounts/${accId}/buckets/${bucketName}/lifecycle`),
         fetch(`/api/accounts/${accId}/buckets/${bucketName}/optimizer`),
         fetch(`/api/accounts/${accId}/buckets/${bucketName}/versioning`),
         fetch(`/api/accounts/${accId}/buckets/${bucketName}/access-policy`),
-        fetch(`/api/accounts/${accId}/buckets/${bucketName}/optimizer-stats`)
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/optimizer-stats`),
+        fetch(`/api/replication/bucket/${accId}/${bucketName}`),
+        fetch(`/api/accounts/${accId}/buckets/${bucketName}/optimizer-sync-status`)
       ]);
       if (resAnlytics.ok) setAnalytics(await resAnlytics.json());
       if (resLifecycle.ok) setLifecycle(await resLifecycle.json());
@@ -205,17 +265,63 @@ function App() {
         setBucketAccessPolicy(pData.policy);
         setBucketCustomPolicy(pData.custom);
       }
-      if (resStats.ok) {
-        setOptimizerStats(await resStats.json());
+      if (resStats.ok) setOptimizerStats(await resStats.json());
+      if (resReplication.ok) {
+        const repData = await resReplication.json();
+        setBucketReplicationRules(repData || []);
       }
-    } catch (error) { console.error(error); } finally { setLoadingConfigs(false); setLoadingOptimizer(false); }
+      if (resSyncStatus.ok) {
+        const syncData = await resSyncStatus.json();
+        setInfraSynced(syncData.synced);
+      }
+    } catch (error) { console.error(error); } finally { setLoadingConfigs(false); setLoadingOptimizer(false); setLoadingReplication(false); }
+  };
+
+  const handleAddReplication = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAccount || !selectedBucket) return;
+    try {
+      const res = await fetch(`/api/replication/bucket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_storage_id: selectedAccount.id,
+          source_bucket: selectedBucket,
+          target_storage_id: newReplica.target_storage_id,
+          target_bucket: newReplica.target_bucket,
+          priority: newReplica.priority
+        }),
+      });
+      if (res.ok) {
+        setShowReplicationForm(false);
+        loadBucketConfigs(selectedAccount.id, selectedBucket);
+      } else {
+        const err = await res.json();
+        alert("Erro: " + err.error);
+      }
+    } catch (e) { alert("Erro ao salvar replicação"); }
+  };
+
+  const handleDeleteReplication = async (ruleId: string) => {
+    if (!selectedAccount || !selectedBucket || !confirm("Remover esta réplica?")) return;
+    try {
+      const res = await fetch(`/api/replication/bucket/${selectedAccount.id}/${selectedBucket}/${ruleId}`, {
+        method: "DELETE"
+      });
+      if (res.ok) loadBucketConfigs(selectedAccount.id, selectedBucket);
+    } catch (e) { alert("Erro ao deletar"); }
+  };
+
+  const formatReplicaDest = (dest: any) => {
+    if (!dest) return "-";
+    const bucket = dest.Bucket?.split(":").pop();
+    return bucket || "-";
   };
 
   const handleUpdateBucketAccessPolicy = async (newPolicy: string) => {
     if (!selectedAccount || !selectedBucket) return;
     if (newPolicy === 'custom') {
       setCustomPolicyTarget({ type: 'bucket' });
-      // Se já temos uma custom policy carregada, usamos ela, senão usamos o padrão
       setTempCustomPerms(bucketCustomPolicy || { "s3:GetObject": true, "s3:PutObject": false, "s3:DeleteObject": false, "s3:ListBucket": false });
       setShowCustomPolicyModal(true);
       return;
@@ -228,7 +334,7 @@ function App() {
       });
       if (res.ok) {
         setBucketAccessPolicy(newPolicy);
-        setBucketCustomPolicy(null); // Reset custom policy if switching to simple public/private
+        setBucketCustomPolicy(null);
       }
     } catch (error) {
       alert("Erro ao alterar política do bucket");
@@ -252,7 +358,6 @@ function App() {
         }
       } catch (e) { alert("Erro ao salvar"); }
     } else {
-      // Para pastas (Optimizer)
       setNewOptimizer({ ...newOptimizer, access_policy: 'custom', custom_policy: tempCustomPerms });
       setShowCustomPolicyModal(false);
     }
@@ -280,14 +385,48 @@ function App() {
   const handleAddLifecycleRule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedAccount || !selectedBucket) return;
-    const ruleToAdd = { ID: newRule.id || `Rule-${Date.now()}`, Status: newRule.status, Filter: { Prefix: newRule.prefix }, Expiration: { Days: Number(newRule.days) } };
-    const updatedRules = [...(lifecycle?.Rules || []), ruleToAdd];
+    
+    const ruleToAdd = { 
+      ID: newRule.id || `Rule-${Date.now()}`, 
+      Status: newRule.status, 
+      Filter: { Prefix: newRule.prefix }, 
+      Expiration: { Days: Number(newRule.days) } 
+    };
+
+    let updatedRules;
+    if (editingLifecycleId) {
+      updatedRules = (lifecycle?.Rules || []).map((r: any) => 
+        r.ID === editingLifecycleId ? ruleToAdd : r
+      );
+    } else {
+      updatedRules = [...(lifecycle?.Rules || []), ruleToAdd];
+    }
+
     try {
       const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/lifecycle`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: updatedRules }),
       });
-      if (res.ok) { setShowLifecycleForm(false); setNewRule({ id: "", prefix: "", days: 30, status: "Enabled" }); loadBucketConfigs(selectedAccount.id, selectedBucket); }
+      if (res.ok) { 
+        setShowLifecycleForm(false); 
+        setEditingLifecycleId(null);
+        setNewRule({ id: "", prefix: "", days: 30, status: "Enabled" }); 
+        loadBucketConfigs(selectedAccount.id, selectedBucket); 
+      }
     } catch (error) { alert("Erro ao salvar"); }
+  };
+
+  const handleEditLifecycle = (rule: any) => {
+    setEditingLifecycleId(rule.ID);
+    setNewRule({
+      id: rule.ID,
+      prefix: rule.Filter?.Prefix || "",
+      days: rule.Expiration?.Days || 30,
+      status: rule.Status || "Enabled"
+    });
+    setShowLifecycleForm(true);
+    setTimeout(() => {
+      document.getElementById('lifecycle-section')?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
   };
 
   const handleDeleteRule = async (ruleId: string) => {
@@ -307,7 +446,8 @@ function App() {
     try {
       const url = editingOptimizer
               ? `/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${editingOptimizer.id}`
-              : `/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer`;      const method = editingOptimizer ? "PUT" : "POST";
+              : `/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer`;
+      const method = editingOptimizer ? "PUT" : "POST";
 
       const res = await fetch(url, {
         method, 
@@ -331,6 +471,24 @@ function App() {
       });
       loadBucketConfigs(selectedAccount.id, selectedBucket);
     } catch (error) { alert("Erro ao deletar"); }
+  };
+
+  const handleSyncOptimizerInfra = async () => {
+    if (!selectedAccount || !selectedBucket) return;
+    if (!confirm("Isso fará com que este Manager (PC/VPS atual) passe a receber as notificações de novos arquivos deste bucket. Deseja continuar?")) return;
+    
+    try {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer-sync-infra`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setInfraSynced(true);
+        alert("Infraestrutura sincronizada! Este ambiente agora processará as otimizações automáticas.");
+      } else {
+        alert("Erro: " + data.error);
+      }
+    } catch (e) { alert("Erro de conexão"); }
   };
 
   const handleRunBatch = async (configId: number, prefix: string) => {
@@ -371,6 +529,26 @@ function App() {
     } catch (error) { alert("Erro de conexão ao atualizar lifecycle"); }
   };
 
+  const handleUpdateFolderPolicy = async (prefix: string, policy: string) => {
+    if (!selectedAccount || !selectedBucket) return;
+    if (policy === 'custom') {
+      setCustomPolicyTarget({ type: 'folder', prefix } as any);
+      setTempCustomPerms({ "s3:GetObject": true, "s3:PutObject": false, "s3:DeleteObject": false, "s3:ListBucket": false });
+      setShowCustomPolicyModal(true);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/folder-policy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prefix, policy }),
+      });
+      if (res.ok) {
+        alert(`Política da pasta "${prefix}" atualizada para ${policy}!`);
+      }
+    } catch (error) { alert("Erro ao atualizar política da pasta"); }
+  };
+
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -402,6 +580,9 @@ function App() {
           <ul>
             <li className={view === "accounts" ? "active" : ""} onClick={() => navigateTo("/")}>
               📦 <span>Contas</span>
+            </li>
+            <li className={view === "replication" ? "active" : ""} onClick={() => navigateTo("/replication")}>
+              🔄 <span>Espelhamento</span>
             </li>
             {selectedAccount && (
               <li className={view === "buckets" ? "active" : ""} onClick={() => navigateTo(`/account/${selectedAccount.id}/buckets`)}>
@@ -440,6 +621,10 @@ function App() {
               </div>
             )}
           </>
+        )}
+
+        {view === "replication" && (
+          <ReplicationPanel accounts={accounts} />
         )}
 
         {view === "buckets" && selectedAccount && (
@@ -533,6 +718,7 @@ function App() {
                           {analytics.tree.map((node, i) => (
                             <FolderRow 
                               key={i} node={node} depth={0} formatSize={formatSize}
+                              onUpdateFolderPolicy={handleUpdateFolderPolicy}
                               onUseInLifecycle={(path) => {
                                 setNewRule({...newRule, prefix: path});
                                 setShowLifecycleForm(true);
@@ -566,13 +752,26 @@ function App() {
               <section className="config-section" id="optimizer-section">
                 <header style={{marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                   <h2>⚙️ Optimizer (Otimização Automática)</h2>
-                  {!showOptimizerForm && (
-                    <button className="btn-primary" onClick={() => {
-                      setShowOptimizerForm(true);
-                      setEditingOptimizer(null);
-                      setNewOptimizer({ enabled: true, prefix_root: "", prefix_work: "", min_size_kb: 0, video_max_mb: 0, auto_lifecycle: false, access_policy: "private", custom_policy: null });
-                    }}>+ Nova Pasta</button>
-                  )}
+                  <div style={{display: 'flex', gap: '1rem', alignItems: 'center'}}>
+                    {optimizerConfigs.length > 0 && (
+                      infraSynced ? (
+                        <span className="badge badge-success" style={{margin: 0, padding: '0.5rem 1rem'}}>
+                          ✅ Conectado a este ambiente
+                        </span>
+                      ) : (
+                        <button className="btn-secondary" onClick={handleSyncOptimizerInfra} title="Faz este Manager assumir o processamento automático deste bucket">
+                          🔄 Sincronizar com este ambiente
+                        </button>
+                      )
+                    )}
+                    {!showOptimizerForm && (
+                      <button className="btn-primary" onClick={() => {
+                        setShowOptimizerForm(true);
+                        setEditingOptimizer(null);
+                        setNewOptimizer({ enabled: true, prefix_root: "", prefix_work: "", min_size_kb: 0, video_max_mb: 0, auto_lifecycle: false, access_policy: "private", custom_policy: null });
+                      }}>+ Nova Pasta</button>
+                    )}
+                  </div>
                 </header>
 
                 {showOptimizerForm && (
@@ -658,13 +857,13 @@ function App() {
 
                 {loadingOptimizer ? <p>Carregando...</p> : (
                   <div className="optimizer-list">
-                    {optimizerConfigs.length === 0 ? <p>Nenhuma pasta configurada para o optimizer.</p> : (
+                    {optimizerConfigs.length === 0 ? <p>Nenhuma pasta configurada.</p> : (
                       <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
                         {optimizerConfigs.map((config) => (
                           <div key={config.id} className="rule-card" style={{borderLeft: config.enabled ? '4px solid #10b981' : '4px solid #ef4444', paddingLeft: '10px'}}>
                             <div className="rule-info">
-                              <p><strong>{config.prefix_root}</strong> {config.enabled ? <span style={{color: '#10b981', fontSize: '0.8rem'}}>(Ativo)</span> : <span style={{color: '#ef4444', fontSize: '0.8rem'}}>(Pausado)</span>}</p>
-                              <p style={{fontSize: '0.8rem', color: '#64748b'}}>Trabalho: <code>{config.prefix_work}</code></p>
+                              <p><strong>{config.prefix_root || "/ (Root)"}</strong> {config.enabled ? <span style={{color: '#10b981', fontSize: '0.8rem'}}>(Ativo)</span> : <span style={{color: '#ef4444', fontSize: '0.8rem'}}>(Pausado)</span>}</p>
+                              <p style={{fontSize: '0.8rem', color: '#64748b'}}><strong>Trabalho:</strong> <code>{config.prefix_root || "/"}</code> | <strong>Temp:</strong> <code>{config.prefix_work}</code></p>
                               <p style={{fontSize: '0.8rem', color: '#64748b'}}>
                                 Min: {config.min_size_kb}KB | Max Vídeo: {config.video_max_mb}MB
                                 {config.auto_lifecycle ? <span style={{marginLeft: '10px', color: '#0ea5e9', fontWeight: 'bold'}}>✨ Limpeza Ativa</span> : ""}
@@ -681,25 +880,27 @@ function App() {
                                 </span>
                               </p>
                             </div>
-                            <div style={{display: 'flex', gap: '1rem', alignItems: 'center'}}>
-                              <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#f8fafc', padding: '4px 10px', borderRadius: '8px', border: '1px solid #e2e8f0'}}>
+                            <div className="rule-actions">
+                              <div className="rule-action-group">
                                 <label className="switch" style={{transform: 'scale(0.8)'}}>
                                   <input type="checkbox" checked={config.auto_lifecycle} onChange={() => handleToggleLifecycle(config)} />
                                   <span className="slider slider-cyan round"></span>
                                 </label>
-                                <span style={{fontSize: '0.75rem', fontWeight: '700', color: '#64748b'}}>LIMPEZA</span>
+                                <span className="action-label">LIMPEZA</span>
                               </div>
 
-                              <button className="btn-secondary" style={{padding: '4px 12px', background: '#f0f9ff', color: '#0369a1', borderColor: '#bae6fd'}} onClick={() => handleRunBatch(config.id, config.prefix_root)}>🚀 Varrer Agora</button>
-                              <button className="btn-secondary" style={{padding: '4px 8px'}} onClick={() => {
-                                setEditingOptimizer(config);
-                                setNewOptimizer(config);
-                                setShowOptimizerForm(true);
-                                setTimeout(() => {
-                                  document.getElementById('optimizer-section')?.scrollIntoView({ behavior: 'smooth' });
-                                }, 100);
-                              }}>✏️</button>
-                              <button className="btn-danger" style={{padding: '4px 8px'}} onClick={() => handleDeleteOptimizer(config.id)}>🗑️</button>
+                              <button className="btn-secondary btn-sweep" onClick={() => handleRunBatch(config.id, config.prefix_root)}>🚀 Varrer Agora</button>
+                              <div className="rule-action-buttons">
+                                <button className="btn-secondary btn-icon" onClick={() => {
+                                  setEditingOptimizer(config);
+                                  setNewOptimizer(config);
+                                  setShowOptimizerForm(true);
+                                  setTimeout(() => {
+                                    document.getElementById('optimizer-section')?.scrollIntoView({ behavior: 'smooth' });
+                                  }, 100);
+                                }}>✏️</button>
+                                <button className="btn-danger btn-icon" onClick={() => handleDeleteOptimizer(config.id)}>🗑️</button>
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -707,6 +908,66 @@ function App() {
                     )}
                   </div>
                 )}
+              </section>
+
+              <section className="config-section">
+                <header style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem'}}>
+                  <h2>🔄 Replicação do Bucket</h2>
+                  <button className="btn-primary" onClick={() => setShowReplicationForm(true)}>+ Nova Réplica</button>
+                </header>
+                {showReplicationForm && (
+                  <div className="rule-form-container" style={{background:'#f8fafc', padding:'1.5rem', borderRadius:'12px', border:'1px solid #e2e8f0', marginBottom:'1.5rem'}}>
+                    <form onSubmit={handleAddReplication}>
+                      <div className="form-group">
+                        <label>Storage Destino</label>
+                        <select value={newReplica.target_storage_id} onChange={e => setNewReplica({...newReplica, target_storage_id: e.target.value})} required>
+                          <option value="">Selecione...</option>
+                          {accounts.filter(a => a.id !== selectedAccount.id).map(acc => (
+                            <option key={acc.id} value={acc.id}>{acc.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="form-row" style={{display: 'flex', gap: '1rem', marginTop:'1rem'}}>
+                        <div className="form-group" style={{flex: 1}}>
+                          <label>Bucket Destino</label>
+                          <input value={newReplica.target_bucket} onChange={e => setNewReplica({...newReplica, target_bucket: e.target.value})} list="target-buckets-cfg" required />
+                          <datalist id="target-buckets-cfg">
+                            {targetBuckets.map(b => (
+                              <option key={b} value={b} />
+                            ))}
+                          </datalist>
+                        </div>
+                        <div className="form-group" style={{maxWidth:'100px'}}>
+                          <label>Prioridade</label>
+                          <input type="number" min="1" value={newReplica.priority} onChange={e => setNewReplica({...newReplica, priority: Number(e.target.value)})} />
+                        </div>
+                      </div>
+                      <div className="card-actions" style={{justifyContent:'flex-end', marginTop:'1rem'}}>
+                        <button type="button" className="btn-secondary" onClick={() => setShowReplicationForm(false)}>Cancelar</button>
+                        <button type="submit" className="btn-primary">Ativar</button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+                <div className="table-scroll" style={{maxHeight:'300px'}}>
+                  <table>
+                    <thead><tr><th>ID</th><th>Destino</th><th>Prio</th><th>Status</th><th>Ações</th></tr></thead>
+                    <tbody>
+                      {bucketReplicationRules.map(r => (
+                        <tr key={r.ID}>
+                          <td>{r.ID.substring(0,8)}</td>
+                          <td>{formatReplicaDest(r.Destination)}</td>
+                          <td>{r.Priority}</td>
+                          <td><span className="badge badge-success" style={{marginBottom: 0}}>{r.Status}</span></td>
+                          <td><button className="btn-danger" style={{padding:'4px 8px'}} onClick={() => handleDeleteReplication(r.ID)}>🗑️</button></td>
+                        </tr>
+                      ))}
+                      {bucketReplicationRules.length === 0 && (
+                        <tr><td colSpan={5} style={{textAlign:'center', color:'#64748b'}}>Nenhuma regra de espelhamento ativa.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </section>
 
               <section className="config-section" id="lifecycle-section">
@@ -723,15 +984,24 @@ function App() {
                 {showLifecycleForm && (
                   <div className="rule-form-container">
                     <form onSubmit={handleAddLifecycleRule}>
-                      <h3>Nova Regra de Expiração</h3>
-                      <div className="form-group"><label>Identificador</label><input value={newRule.id} onChange={e => setNewRule({...newRule, id: e.target.value})} placeholder="Ex: Limpeza" /></div>
+                      <h3>{editingLifecycleId ? "Editar Regra de Expiração" : "Nova Regra de Expiração"}</h3>
+                      <div className="form-group">
+                        <label>Identificador</label>
+                        <input 
+                          value={newRule.id} 
+                          onChange={e => setNewRule({...newRule, id: e.target.value})} 
+                          placeholder="Ex: Limpeza" 
+                          disabled={!!editingLifecycleId} 
+                        />
+                        {editingLifecycleId && <small style={{color: '#64748b'}}>O ID não pode ser alterado em uma edição S3.</small>}
+                      </div>
                       <div className="form-row" style={{display: 'flex', gap: '1.5rem'}}>
                         <div className="form-group" style={{flex: 1}}><label>Pasta</label><input value={newRule.prefix} onChange={e => setNewRule({...newRule, prefix: e.target.value})} /></div>
                         <div className="form-group" style={{flex: 1}}><label>Dias</label><input type="number" value={newRule.days} onChange={e => setNewRule({...newRule, days: Number(e.target.value)})} /></div>
                       </div>
                       <div className="card-actions" style={{justifyContent: 'flex-end'}}>
-                        <button type="button" className="btn-secondary" onClick={() => setShowLifecycleForm(false)}>Cancelar</button>
-                        <button type="submit" className="btn-primary">Ativar</button>
+                        <button type="button" className="btn-secondary" onClick={() => { setShowLifecycleForm(false); setEditingLifecycleId(null); }}>Cancelar</button>
+                        <button type="submit" className="btn-primary">{editingLifecycleId ? "Salvar Alterações" : "Ativar"}</button>
                       </div>
                     </form>
                   </div>
@@ -745,7 +1015,10 @@ function App() {
                         <p style={{fontSize: '0.9rem', color: '#64748b'}}>Pasta: <code>{rule.Filter?.Prefix || "/"}</code></p>
                         <p style={{fontSize: '0.9rem', color: '#64748b'}}>Expira em: <strong>{rule.Expiration?.Days} dias</strong></p>
                       </div>
-                      <button className="btn-danger" onClick={() => handleDeleteRule(rule.ID)}>🗑️ Remover</button>
+                      <div className="rule-actions">
+                        <button className="btn-secondary btn-icon" onClick={() => handleEditLifecycle(rule)}>✏️</button>
+                        <button className="btn-danger btn-icon" onClick={() => handleDeleteRule(rule.ID)}>🗑️</button>
+                      </div>
                     </div>
                   ))}
                 </div>

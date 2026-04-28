@@ -278,6 +278,15 @@ export async function setBucketLifecycle(client: S3Client, bucket: string, rules
   return client.send(cmd);
 }
 
+export async function getBucketNotification(client: S3Client, bucket: string) {
+  try {
+    const cmd = new GetBucketNotificationConfigurationCommand({ Bucket: bucket });
+    return await client.send(cmd);
+  } catch (err: any) {
+    return {};
+  }
+}
+
 export async function setBucketNotification(client: S3Client, bucket: string, prefixes: string[]) {
   const cmd = new PutBucketNotificationConfigurationCommand({
     Bucket: bucket,

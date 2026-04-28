@@ -85,4 +85,26 @@ export async function initDB() {
       FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE
     )
   `);
+
+  // Tabela de configurações do sistema
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS system_config (
+      config_key VARCHAR(50) PRIMARY KEY,
+      config_value TEXT
+    )
+  `);
+
+  console.log("MySQL initialized and tables verified");
+}
+
+import { v4 } from "uuid";
+export async function getManagerInstanceId(): Promise<string> {
+  const [rows]: any = await pool.query("SELECT config_value FROM system_config WHERE config_key = 'manager_id'");
+  if (rows.length > 0) {
+    return rows[0].config_value;
+  }
+
+  const newId = v4();
+  await pool.query("INSERT INTO system_config (config_key, config_value) VALUES ('manager_id', ?)", [newId]);
+  return newId;
 }
