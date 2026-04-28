@@ -60,7 +60,7 @@ services:
     build: ./optimizer
     container_name: object-storage-optimizer
     ports:
-      - "8000:8000"
+      - "8009:8000"
     environment:
       MANAGER_BASE_URL: http://backend:3005
       MANAGER_POLL_SECONDS: 30
