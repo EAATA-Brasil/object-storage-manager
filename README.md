@@ -1,100 +1,61 @@
 # ☁️ Object Storage Manager
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Node.js](https://img.shields.io/badge/node.js-v22+-6DA55F?logo=node.js&logoColor=white)
-![React](https://img.shields.io/badge/react-v19+-61DAFB?logo=react&logoColor=black)
-![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?logo=docker&logoColor=white)
-![TypeScript](https://img.shields.io/badge/typescript-%23007ACC.svg?logo=typescript&logoColor=white)
+O **Object Storage Manager** é uma interface administrativa completa e moderna para gerenciamento de provedores S3 (MinIO, AWS, etc.), focada em automação, otimização de custos e portabilidade multi-ambiente.
 
-Uma plataforma centralizada e moderna para gerenciamento de múltiplos provedores de **Object Storage** compatíveis com a API S3 (MinIO, AWS S3, Cloudflare R2, DigitalOcean Spaces). 
+## 🚀 Principais Funcionalidades
 
-Projetado para oferecer visibilidade granular sobre o consumo de dados e automação de políticas de limpeza (Lifecycle) em uma interface intuitiva e performática.
+### 🎨 Interface Clássica & Responsiva
+- **Layout Profissional:** Barra lateral fixa para navegação rápida em desktop.
+- **Mobile First:** Navbar superior em formato de "pílulas" e tabelas que se transformam em cards para eliminar o scroll lateral em smartphones.
+- **Experiência Fluida:** Feedback visual instantâneo para todas as operações.
 
----
+### ⚙️ Optimizer (Otimização de Custos e Espaço)
+- **Otimização Automática:** Redução de tamanho de imagens e vídeos via webhooks do MinIO.
+- **Varrer Agora (Batch):** Varredura manual de pastas existentes para otimização em massa.
+- **Sincronização Inteligente Multi-Ambiente:**
+    - As configurações são salvas diretamente no S3 (`.manager-config/optimizer.json`).
+    - **Auto-Discovery:** Adicione sua conta em qualquer novo Manager e ele importará as regras automaticamente.
+    - **Identidade de Instância:** Cada instalação possui um ID Único, permitindo alternar qual servidor (VPS ou Local) processa os eventos do bucket com um clique em "Sincronizar com este ambiente".
+- **Estatísticas Reais:** Acompanhamento de quantos arquivos foram processados e quanto espaço foi economizado.
 
-## ✨ Funcionalidades Principais
+### 🔄 Replicação e Espelhamento
+- **Site-Level:** Replicação completa entre storages diferentes.
+- **Bucket-Level:** Gerenciamento granular de regras de replicação para buckets específicos, com controle de prioridade e destino.
 
-- **📦 Multi-Account Management:** Cadastre e gerencie múltiplas contas de storage simultaneamente.
-- **🌳 Hierarchical Analytics:** Explore seus buckets através de uma árvore de pastas recursiva com cálculo em tempo real de tamanho e quantidade de objetos por nível.
-- **🕒 Smart Lifecycle:** Configure regras de expiração de objetos diretamente pela interface, com atalhos baseados na análise de pastas.
-- **🐳 Docker Native:** Ambiente totalmente conteinerizado com suporte a Hot Reload tanto no Frontend quanto no Backend.
-- **🎨 Modern UI:** Interface responsiva inspirada em padrões SaaS (Stripe/Vercel) com foco em produtividade.
+### 🔒 Políticas de Acesso Granulares
+- **Gerenciamento de Pastas:** Defina políticas (Privado, Público ou Customizado) para pastas específicas sem sair do painel.
+- **Editor de Permissões:** Interface visual para definir permissões de Download, Upload, Deleção e Listagem para usuários anônimos.
 
----
+### 🕒 Lifecycle (Ciclo de Vida)
+- **Limpeza Automática:** Configure regras de expiração para arquivos temporários ou backups antigos.
+- **Integração com Optimizer:** O sistema pode gerenciar automaticamente a limpeza de 24h para pastas de trabalho do Optimizer.
 
-## 🏗️ Arquitetura Técnica
+## 🛠️ Tecnologias
+- **Frontend:** React + TypeScript + Vite.
+- **Backend:** Node.js + Express + MySQL.
+- **Serviço de Otimização:** Python + FastAPI + FFmpeg + Pillow.
+- **Infraestrutura:** Docker & Docker Compose.
 
-A aplicação utiliza uma estrutura desacoplada e escalável:
+## 📦 Como Iniciar
 
-- **Frontend:** React 19 (Vite) + TypeScript + CSS Variables (Design System customizado).
-- **Backend:** Node.js + Express + TypeScript.
-- **Integração:** AWS SDK for JavaScript v3 (Modular).
-- **Banco de Dados:** MySQL 8.0 para persistência de credenciais e configurações.
-- **Infraestrutura:** Docker & Docker Compose para orquestração de serviços.
+1.  **Clone o repositório:**
+    ```bash
+    git clone https://github.com/seu-usuario/object-storage-manager.git
+    ```
 
----
+2.  **Configure as variáveis de ambiente:**
+    - Edite o arquivo `.env` na pasta `backend/` e `optimizer/` conforme os exemplos.
 
-## 🚀 Como Iniciar
+3.  **Inicie com Docker Compose:**
+    ```bash
+    docker-compose up -d --build
+    ```
 
-### Pré-requisitos
-- Docker e Docker Compose instalados.
+4.  **Acesse o painel:**
+    - O frontend estará disponível em `http://localhost:5173` ou na porta configurada.
 
-### Execução em Desenvolvimento
-1. Clone este repositório:
-   ```bash
-   git clone https://github.com/seu-usuario/object-storage-manager.git
-   cd object-storage-manager
-   ```
-
-2. Suba o ambiente completo:
-   ```bash
-   docker-compose up --build
-   ```
-
-3. Acesse a aplicação:
-   - **Frontend:** [http://localhost:5173](http://localhost:5173)
-   - **Backend API:** [http://localhost:3005](http://localhost:3005)
-
----
-
-## 🛠️ Desenvolvimento e Manutenção
-
-O ambiente Docker está configurado para refletir alterações em tempo real:
-- **Hot Reload (Frontend):** Configurado com Polling para garantir compatibilidade entre SOs.
-- **Auto-restart (Backend):** Utiliza `ts-node-dev` monitorando mudanças na pasta `src`.
-
-### Estrutura de Pastas
-```text
-.
-├── backend/           # API REST em TypeScript
-│   ├── src/
-│   │   ├── services/  # Lógica de integração S3 (AWS SDK)
-│   │   ├── routes/    # Definição dos endpoints
-│   │   └── db.ts      # Conexão e inicialização do banco
-├── frontend/          # SPA em React
-│   ├── src/
-│   │   ├── App.tsx    # Lógica principal e navegação
-│   │   └── App.css    # Design System e estilização
-└── docker-compose.yml # Orquestração da stack (MySQL + API + Web)
-```
+## 🔒 Segurança
+O sistema utiliza criptografia para chaves de acesso e segue as melhores práticas de comunicação direta com a API do S3, garantindo que suas credenciais nunca sejam expostas.
 
 ---
-
-## 📋 Roadmap de Funcionalidades
-
-- [ ] Listagem e visualização de objetos individuais.
-- [ ] Upload e Download de arquivos via interface.
-- [ ] Gerenciamento de políticas de segurança (Bucket Policies).
-- [ ] Integração com Microserviço de Otimização de Arquivos.
-- [ ] Gráficos comparativos de uso histórico.
-
----
-
-## 📄 Licença
-
-Distribuído sob a licença MIT. Veja `LICENSE` para mais informações.
-
----
-<p align="center">Desenvolvido com ❤️ para simplificar a gestão de dados em nuvem.</p>
-"# object-storage-manager" 
-"# object-storage-manager" 
+Desenvolvido para simplificar a gestão de dados em nuvem com inteligência e performance.
