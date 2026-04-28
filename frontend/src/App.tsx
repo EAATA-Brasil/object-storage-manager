@@ -545,7 +545,9 @@ function App() {
                                 setNewOptimizer({
                                   ...newOptimizer,
                                   prefix_root: path,
-                                  prefix_work: path + "otimizando/"
+                                  prefix_work: path + "otimizando/",
+                                  access_policy: "private",
+                                  custom_policy: null
                                 });
                                 setShowOptimizerForm(true);
                                 setEditingOptimizer(null);
@@ -569,7 +571,7 @@ function App() {
                     <button className="btn-primary" onClick={() => {
                       setShowOptimizerForm(true);
                       setEditingOptimizer(null);
-                      setNewOptimizer({ enabled: true, prefix_root: "", prefix_work: "", min_size_kb: 0, video_max_mb: 0, auto_lifecycle: false, access_policy: "private" });
+                      setNewOptimizer({ enabled: true, prefix_root: "", prefix_work: "", min_size_kb: 0, video_max_mb: 0, auto_lifecycle: false, access_policy: "private", custom_policy: null });
                     }}>+ Nova Pasta</button>
                   )}
                 </header>
