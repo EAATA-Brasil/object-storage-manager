@@ -210,6 +210,7 @@ function App() {
     if (!selectedAccount || !selectedBucket) return;
     if (newPolicy === 'custom') {
       setCustomPolicyTarget({ type: 'bucket' });
+      // Se já temos uma custom policy carregada, usamos ela, senão usamos o padrão
       setTempCustomPerms(bucketCustomPolicy || { "s3:GetObject": true, "s3:PutObject": false, "s3:DeleteObject": false, "s3:ListBucket": false });
       setShowCustomPolicyModal(true);
       return;
@@ -220,7 +221,10 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ policy: newPolicy }),
       });
-      if (res.ok) setBucketAccessPolicy(newPolicy);
+      if (res.ok) {
+        setBucketAccessPolicy(newPolicy);
+        setBucketCustomPolicy(null); // Reset custom policy if switching to simple public/private
+      }
     } catch (error) {
       alert("Erro ao alterar política do bucket");
     }
@@ -470,7 +474,11 @@ function App() {
                     <option value="custom">🛠️ Customizado</option>
                   </select>
                   {bucketAccessPolicy === 'custom' && (
-                    <button className="btn-link" style={{fontSize: '0.75rem'}} onClick={() => handleUpdateBucketAccessPolicy('custom')}>⚙️ Configurar</button>
+                    <button className="btn-link" style={{fontSize: '0.75rem'}} onClick={() => {
+                      setCustomPolicyTarget({ type: 'bucket' });
+                      setTempCustomPerms(bucketCustomPolicy || { "s3:GetObject": true, "s3:PutObject": false, "s3:DeleteObject": false, "s3:ListBucket": false });
+                      setShowCustomPolicyModal(true);
+                    }}>⚙️ Configurar</button>
                   )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
