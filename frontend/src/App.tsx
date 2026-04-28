@@ -673,6 +673,9 @@ function App() {
                                 setEditingOptimizer(config);
                                 setNewOptimizer(config);
                                 setShowOptimizerForm(true);
+                                setTimeout(() => {
+                                  document.getElementById('optimizer-section')?.scrollIntoView({ behavior: 'smooth' });
+                                }, 100);
                               }}>✏️</button>
                               <button className="btn-danger" style={{padding: '4px 8px'}} onClick={() => handleDeleteOptimizer(config.id)}>🗑️</button>
                             </div>
