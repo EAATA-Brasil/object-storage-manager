@@ -63,6 +63,8 @@ META_OPT_VAL = "1"
 # Performance
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "1"))
 BATCH_SLEEP_MS = int(os.getenv("BATCH_SLEEP_MS", "0"))
+MIN_SIZE_KB = int(os.getenv("MIN_SIZE_KB", "0"))
+VIDEO_MAX_MB = int(os.getenv("VIDEO_MAX_MB", "0"))
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VID_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
