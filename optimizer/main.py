@@ -390,7 +390,7 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
         out_path
     ]
 
-    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3600)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg_failed: {r.stderr.strip()[:1200]}")
 
@@ -739,14 +739,26 @@ async def batch_worker():
     while True:
         # Pega a próxima tarefa da fila
         task = await _BATCH_QUEUE.get()
-        try:
-            storage_id = task["storage_id"]
-            bucket = task["bucket"]
-            prefix = task["prefix"]
-            limit = task["limit"]
-            dry_run = task["dry_run"]
-            callback_url = task["callback_url"]
+        
+        storage_id = task.get("storage_id")
+        bucket = task.get("bucket")
+        prefix = task.get("prefix")
+        limit = task.get("limit", 0)
+        dry_run = task.get("dry_run", False)
+        callback_url = task.get("callback_url")
 
+        results = {
+            "scanned": 0,
+            "candidates": 0,
+            "processed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "timestamp": str(time.time()),
+            "stopped": False,
+            "error": None
+        }
+
+        try:
             _BATCH_RUNNING = True
             _BATCH_STOP_REQUESTED = False
 
@@ -760,52 +772,51 @@ async def batch_worker():
             
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             lock = asyncio.Lock()
-            processed = 0
-            skipped = 0
-            failed = 0
-            candidates = 0
-            scanned = 0
 
             async def handle_key(k: str):
-                nonlocal processed, skipped, failed
                 async with sem:
                     if BATCH_SLEEP_MS > 0: await asyncio.sleep(BATCH_SLEEP_MS / 1000.0)
                     if dry_run: return
                     try:
                         ok, reason, media = await asyncio.to_thread(process_one_key, client, target_bucket, k, cfg, storage_id)
                         async with lock:
-                            if ok: processed += 1
-                            else: skipped += 1
-                    except Exception:
-                        async with lock: failed += 1
+                            if ok: results["processed"] += 1
+                            else: results["skipped"] += 1
+                    except Exception as e:
+                        log(f"[BATCH-TASK] Error processing {k}: {e}")
+                        async with lock: results["failed"] += 1
 
             tasks = []
             objects = client.list_objects(target_bucket, prefix=target_prefix, recursive=True)
             for obj in objects:
                 if _BATCH_STOP_REQUESTED:
                     log("[BATCH-TASK] Stop requested by user.")
+                    results["stopped"] = True
                     break
                 
                 k = getattr(obj, "object_name", None)
                 if not k: continue
                 
-                scanned += 1
-                if scanned % 1000 == 0:
-                    log(f"[BATCH-TASK] Progress: scanned={scanned} candidates={candidates} processed={processed}")
+                results["scanned"] += 1
+                if results["scanned"] % 1000 == 0:
+                    log(f"[BATCH-TASK] Progress: scanned={results['scanned']} candidates={results['candidates']} processed={results['processed']}")
 
                 if k.startswith(prefix_work):
                     continue
 
-                if cfg and not bool(cfg.get("enabled", False)): break
+                if cfg and not bool(cfg.get("enabled", False)):
+                    log("[BATCH-TASK] Optimizer disabled for this bucket during scan.")
+                    break
+                    
                 if cfg and not passes_prefix_rules(k, cfg): continue
                 
                 e = ext_of(k)
                 if e not in IMG_EXTS and e not in VID_EXTS: continue
                 
-                candidates += 1
+                results["candidates"] += 1
                 tasks.append(asyncio.create_task(handle_key(k)))
                 
-                if limit > 0 and candidates >= limit: break
+                if limit > 0 and results["candidates"] >= limit: break
                 
                 if len(tasks) >= 200:
                     await asyncio.gather(*tasks)
@@ -813,30 +824,24 @@ async def batch_worker():
             
             if tasks: await asyncio.gather(*tasks)
             
-            log(f"[BATCH-TASK] Finished. S:{scanned} C:{candidates} P:{processed} Sk:{skipped} F:{failed}")
-            
+            log(f"[BATCH-TASK] Finished. S:{results['scanned']} C:{results['candidates']} P:{results['processed']} Sk:{results['skipped']} F:{results['failed']}")
+
+        except Exception as e:
+            log(f"[BATCH-TASK] CRITICAL ERROR: {e}")
+            results["error"] = str(e)
+        finally:
             if callback_url:
                 try:
-                    results = {
-                        "scanned": scanned,
-                        "candidates": candidates,
-                        "processed": processed,
-                        "skipped": skipped,
-                        "failed": failed,
-                        "timestamp": str(asyncio.get_event_loop().time()),
-                        "stopped": _BATCH_STOP_REQUESTED
-                    }
+                    results["timestamp"] = str(time.time())
                     async with httpx.AsyncClient() as c:
-                        await c.post(callback_url, json=results, timeout=10)
+                        await c.post(callback_url, json=results, timeout=15)
                     log(f"[BATCH-TASK] Callback with results sent to {callback_url}")
                 except Exception as cb_err:
                     log(f"[BATCH-TASK] Callback FAILED: {cb_err}")
 
-        except Exception as e:
-            log(f"[BATCH-TASK] CRITICAL ERROR: {e}")
-        finally:
             _BATCH_RUNNING = False
             _BATCH_QUEUE.task_done()
+
 
 @app.post("/batch/stop")
 async def stop_batch():

@@ -576,7 +576,7 @@ function App() {
   const handleRunBatch = async (configId: number, prefix: string) => {
     if (!selectedAccount || !selectedBucket) return;
     if (!confirm(`Deseja iniciar a varredura (batch) na pasta ${prefix}?`)) return;
-    
+
     try {
       const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${configId}/run-batch`, {
         method: "POST",
@@ -592,7 +592,23 @@ function App() {
     } catch (error) { alert("Erro de conexão ao iniciar batch"); }
   };
 
+  const handleForceUnlock = async (configId: number) => {
+    if (!selectedAccount || !selectedBucket) return;
+    if (!confirm("Isso irá resetar o estado de varredura. Use apenas se a varredura estiver travada há muito tempo. Continuar?")) return;
+
+    try {
+      const res = await fetch(`/api/accounts/${selectedAccount.id}/buckets/${selectedBucket}/optimizer/${configId}/unlock-force`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        loadBucketConfigs(selectedAccount.id, selectedBucket);
+        alert("Estado resetado com sucesso!");
+      }
+    } catch (error) { alert("Erro ao resetar estado"); }
+  };
+
   const handleToggleLifecycle = async (config: any) => {
+
     if (!selectedAccount || !selectedBucket) return;
     const updated = { ...config, auto_lifecycle: !config.auto_lifecycle };
     
@@ -1002,13 +1018,25 @@ function App() {
                                 <span className="action-label">LIMPEZA</span>
                               </div>
 
-                              <button 
-                                className={`btn-secondary btn-sweep ${config.is_scanning ? 'loading' : ''}`} 
-                                onClick={() => handleRunBatch(config.id, config.prefix_root)}
-                                disabled={config.is_scanning}
-                              >
-                                {config.is_scanning ? "⏳ Varrendo..." : "🚀 Varrer Agora"}
-                              </button>
+                              <div className="btn-sweep-container" style={{display: 'flex', gap: '4px'}}>
+                                <button 
+                                  className={`btn-secondary btn-sweep ${config.is_scanning ? 'loading' : ''}`} 
+                                  onClick={() => handleRunBatch(config.id, config.prefix_root)}
+                                  disabled={config.is_scanning}
+                                >
+                                  {config.is_scanning ? "⏳ Varrendo..." : "🚀 Varrer Agora"}
+                                </button>
+                                {config.is_scanning && (
+                                  <button 
+                                    className="btn-danger btn-icon" 
+                                    title="Resetar estado (Forçar Destravar)"
+                                    onClick={() => handleForceUnlock(config.id)}
+                                    style={{padding: '0 8px', fontSize: '10px'}}
+                                  >
+                                    🔄
+                                  </button>
+                                )}
+                              </div>
                               <div className="rule-action-buttons">
                                 <button className="btn-secondary btn-icon" disabled={config.is_scanning} onClick={() => {
                                   setEditingOptimizer(config);

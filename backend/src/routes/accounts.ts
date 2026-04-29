@@ -819,6 +819,20 @@ router.post("/:id/buckets/:bucketName/optimizer/:configId/unlock", async (req, r
   }
 });
 
+// Force Unlock (manual reset)
+router.post("/:id/buckets/:bucketName/optimizer/:configId/unlock-force", async (req, res) => {
+  const { configId } = req.params;
+  try {
+    await pool.query(
+      "UPDATE bucket_optimizer_configs SET is_scanning = 0 WHERE id = ?", 
+      [configId]
+    );
+    res.json({ success: true, message: "Forced unlock successful" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to force unlock" });
+  }
+});
+
 // Folder-specific policies
 router.post("/:id/buckets/:bucketName/folder-policy", async (req, res) => {
   const { id, bucketName } = req.params;
