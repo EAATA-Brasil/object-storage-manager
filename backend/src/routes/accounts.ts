@@ -808,13 +808,21 @@ router.post("/:id/buckets/:bucketName/optimizer/:configId/unlock", async (req, r
   const { configId } = req.params;
   const results = req.body; // Vem do Optimizer
 
+  console.log(`[OPTIMIZER-CALLBACK] Unlocking config ${configId}`, results);
+
   try {
-    await pool.query(
+    const [dbResult]: any = await pool.query(
       "UPDATE bucket_optimizer_configs SET is_scanning = 0, last_scan_results = ? WHERE id = ?", 
       [results ? JSON.stringify(results) : null, configId]
     );
+    
+    if (dbResult.affectedRows === 0) {
+      console.warn(`[OPTIMIZER-CALLBACK] No config found with id ${configId} to unlock`);
+    }
+
     res.json({ success: true, message: "Lock removed and results stored" });
   } catch (err) {
+    console.error(`[OPTIMIZER-CALLBACK] Failed to unlock config ${configId}:`, err);
     res.status(500).json({ error: "Failed to unlock" });
   }
 });
