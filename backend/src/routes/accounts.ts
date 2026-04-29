@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { pool, getManagerInstanceId } from "../db";
 import { v4 as uuidv4 } from "uuid";
+import { encrypt, decrypt } from "../utils/crypto";
 import { 
   createS3Client, 
   getBuckets, 
@@ -33,8 +34,8 @@ async function setupOptimizerNotification(storageId: string, bucketName: string)
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -53,8 +54,8 @@ async function setupBucketPolicy(storageId: string, bucketName: string) {
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -90,8 +91,8 @@ async function syncOptimizerConfigToS3(storageId: string, bucketName: string, fo
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -127,8 +128,8 @@ async function setupAutoLifecycle(storageId: string, bucketName: string, workPre
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -171,7 +172,7 @@ router.post("/", async (req, res) => {
   try {
     await pool.query(
       "INSERT INTO storage_accounts (id, name, endpoint, region, access_key, secret_key, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [id, name, endpoint, region || "us-east-1", access_key, secret_key, provider || "minio"]
+      [id, name, endpoint, region || "us-east-1", encrypt(access_key), encrypt(secret_key), provider || "minio"]
     );
     res.json({ id, name });
   } catch (err) {
@@ -179,12 +180,72 @@ router.post("/", async (req, res) => {
   }
 });
 
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name, endpoint, region, access_key, secret_key, provider } = req.body;
+  
+  try {
+    await pool.query(
+      "UPDATE storage_accounts SET name = ?, endpoint = ?, region = ?, access_key = ?, secret_key = ?, provider = ? WHERE id = ?",
+      [name, endpoint, region || "us-east-1", encrypt(access_key), encrypt(secret_key), provider || "minio", id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update account" });
+  }
+});
+
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
   try {
+    const currentManagerId = await getManagerInstanceId();
+    
+    // 1. Antes de deletar a conta, tenta limpar configs no S3 APENAS se formos os donos
+    const [rows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [id]);
+    const account = rows[0];
+    if (account) {
+      const client = createS3Client({
+        endpoint: account.endpoint,
+        accessKeyId: decrypt(account.access_key),
+        secretAccessKey: decrypt(account.secret_key),
+        region: account.region,
+      });
+
+      const { Buckets } = await getBuckets(client);
+      const { GetObjectCommand, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+
+      if (Buckets) {
+        for (const b of Buckets) {
+          const bucketName = b.Name!;
+          try {
+            // Verifica quem é o dono da config no S3
+            const s3Response = await client.send(new GetObjectCommand({
+              Bucket: bucketName,
+              Key: ".manager-config/optimizer.json"
+            }));
+            
+            const bodyContents = await s3Response.Body?.transformToString();
+            if (bodyContents) {
+              const remoteData = JSON.parse(bodyContents);
+              // Só deleta se o manager_id for o nosso
+              if (remoteData.manager_id === currentManagerId) {
+                await client.send(new DeleteObjectCommand({
+                  Bucket: bucketName,
+                  Key: ".manager-config/optimizer.json"
+                }));
+                console.log(`[CLEANUP] Deleted owned config for bucket ${bucketName}`);
+              }
+            }
+          } catch (e) { /* Arquivo não existe ou erro de leitura, ignora */ }
+        }
+      }
+    }
+
+    // 2. Deleta do banco (o cascading delete cuidará das configs locais)
     await pool.query("DELETE FROM storage_accounts WHERE id = ?", [id]);
     res.json({ success: true });
   } catch (err) {
+    console.error("Failed to delete account:", err);
     res.status(500).json({ error: "Failed to delete account" });
   }
 });
@@ -200,8 +261,8 @@ router.get("/:id/buckets", async (req, res) => {
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -219,8 +280,8 @@ router.get("/:id/buckets/:bucketName/versioning", async (req, res) => {
     const account: any = (rows as any[])[0];
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
     const data = await getBucketVersioning(client, bucketName);
@@ -238,8 +299,8 @@ router.put("/:id/buckets/:bucketName/versioning", async (req, res) => {
     const account: any = (rows as any[])[0];
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
     await setBucketVersioning(client, bucketName, enabled);
@@ -282,8 +343,8 @@ router.get("/:id/buckets/:bucketName/analytics", async (req, res) => {
     
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -302,8 +363,8 @@ router.get("/:id/buckets/:bucketName/lifecycle", async (req, res) => {
     
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -323,8 +384,8 @@ router.put("/:id/buckets/:bucketName/lifecycle", async (req, res) => {
     
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -336,6 +397,68 @@ router.put("/:id/buckets/:bucketName/lifecycle", async (req, res) => {
 });
 
 // Optimizer Configs
+// Get all optimizer configs for an account (with Auto-discovery)
+router.get("/:id/optimizer-configs", async (req, res) => {
+  const { id } = req.params;
+  try {
+    // 1. Busca do banco local
+    const [rows]: any = await pool.query(
+      "SELECT * FROM bucket_optimizer_configs WHERE storage_account_id = ?",
+      [id]
+    );
+
+    // 2. Tenta Auto-discovery em todos os buckets da conta
+    const [accRows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [id]);
+    const account = accRows[0];
+    
+    if (account) {
+      const client = createS3Client({
+        endpoint: account.endpoint,
+        accessKeyId: decrypt(account.access_key),
+        secretAccessKey: decrypt(account.secret_key),
+        region: account.region,
+      });
+
+      const { Buckets } = await getBuckets(client);
+      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+
+      if (Buckets) {
+        for (const b of Buckets) {
+          const bucketName = b.Name!;
+          try {
+            const s3Response = await client.send(new GetObjectCommand({
+              Bucket: bucketName,
+              Key: ".manager-config/optimizer.json"
+            }));
+            const bodyContents = await s3Response.Body?.transformToString();
+            if (bodyContents) {
+              const remoteData = JSON.parse(bodyContents);
+              const remoteConfigs = Array.isArray(remoteData) ? remoteData : (remoteData.configs || []);
+              
+              for (const cfg of remoteConfigs) {
+                await pool.query(`
+                  INSERT IGNORE INTO bucket_optimizer_configs 
+                  (storage_account_id, bucket_name, enabled, prefix_root, prefix_work, min_size_kb, video_max_mb, auto_lifecycle, access_policy, custom_policy)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [id, bucketName, cfg.enabled, cfg.prefix_root, cfg.prefix_work, cfg.min_size_kb, cfg.video_max_mb, cfg.auto_lifecycle, cfg.access_policy, cfg.custom_policy]);
+              }
+            }
+          } catch (e) { /* Ignora se bucket não tem config */ }
+        }
+      }
+    }
+
+    // 3. Retorna tudo atualizado
+    const [finalRows]: any = await pool.query(
+      "SELECT * FROM bucket_optimizer_configs WHERE storage_account_id = ?",
+      [id]
+    );
+    res.json(finalRows);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch account optimizer configs" });
+  }
+});
+
 router.get("/:id/buckets/:bucketName/optimizer", async (req, res) => {
   const { id, bucketName } = req.params;
   try {
@@ -356,8 +479,8 @@ router.get("/:id/buckets/:bucketName/optimizer", async (req, res) => {
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -596,8 +719,8 @@ router.get("/:id/buckets/:bucketName/optimizer-sync-status", async (req, res) =>
 
     const client = createS3Client({
       endpoint: account.endpoint,
-      accessKeyId: account.access_key,
-      secretAccessKey: account.secret_key,
+      accessKeyId: decrypt(account.access_key),
+      secretAccessKey: decrypt(account.secret_key),
       region: account.region,
     });
 
@@ -629,10 +752,26 @@ router.get("/:id/buckets/:bucketName/optimizer-sync-status", async (req, res) =>
 
 // Trigger Batch Optimization
 router.post("/:id/buckets/:bucketName/optimizer/:configId/run-batch", async (req, res) => {
-  const { id, bucketName } = req.params;
+  const { id, bucketName, configId } = req.params;
   const { prefix, dry_run, limit } = req.body;
   
   try {
+    // 1. Verifica se já está varrendo
+    const [rows]: any = await pool.query(
+      "SELECT is_scanning FROM bucket_optimizer_configs WHERE id = ?",
+      [configId]
+    );
+
+    if (rows[0]?.is_scanning) {
+      return res.status(423).json({ error: "Este prefixo já está sendo varrido no momento." });
+    }
+
+    // 2. Ativa o lock
+    await pool.query(
+      "UPDATE bucket_optimizer_configs SET is_scanning = 1, last_scan_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [configId]
+    );
+
     const optimizerUrl = process.env.OPTIMIZER_URL || "http://localhost:8000";
     const params = new URLSearchParams();
     params.append("storage_id", id);
@@ -641,15 +780,42 @@ router.post("/:id/buckets/:bucketName/optimizer/:configId/run-batch", async (req
     if (dry_run) params.append("dry_run", "true");
     if (limit) params.append("limit", limit.toString());
 
+    // Callback para destravar
+    const callback = `${process.env.PUBLIC_BACKEND_URL || 'http://backend:3005'}/api/accounts/${id}/buckets/${bucketName}/optimizer/${configId}/unlock`;
+    params.append("callback_url", callback);
+
     const response = await fetch(`${optimizerUrl}/batch?${params.toString()}`, {
       method: "POST",
     });
+
+    if (!response.ok) {
+      await pool.query("UPDATE bucket_optimizer_configs SET is_scanning = 0 WHERE id = ?", [configId]);
+      const errData = await response.json();
+      return res.status(response.status).json(errData);
+    }
 
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
     console.error("Failed to trigger batch:", err);
+    await pool.query("UPDATE bucket_optimizer_configs SET is_scanning = 0 WHERE id = ?", [configId]);
     res.status(500).json({ error: "Failed to trigger batch optimization", details: err.message });
+  }
+});
+
+// Unlock route (called by Optimizer or manually if stuck)
+router.post("/:id/buckets/:bucketName/optimizer/:configId/unlock", async (req, res) => {
+  const { configId } = req.params;
+  const results = req.body; // Vem do Optimizer
+
+  try {
+    await pool.query(
+      "UPDATE bucket_optimizer_configs SET is_scanning = 0, last_scan_results = ? WHERE id = ?", 
+      [results ? JSON.stringify(results) : null, configId]
+    );
+    res.json({ success: true, message: "Lock removed and results stored" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to unlock" });
   }
 });
 

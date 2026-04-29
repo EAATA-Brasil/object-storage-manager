@@ -7,6 +7,7 @@ import asyncio
 import time
 import threading
 import requests
+import httpx
 from urllib.parse import unquote_plus
 
 from fastapi import FastAPI, Request, Query
@@ -35,7 +36,7 @@ app = FastAPI()
 
 
 # ===== ENV (fallback modo antigo) =====
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9005").replace("http://", "").replace("https://", "")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000").replace("http://", "").replace("https://", "")       
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "admin123456")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
@@ -127,7 +128,7 @@ def metrics():
 def log(msg: str):
     print(msg, flush=True)
 
-def log_optimization(storage_id: str, bucket: str, file_key: str, file_type: str, before: int, after: int):
+def log_optimization(storage_id: str, bucket: str, file_key: str, file_type: str, before: int, after: int):     
     """Envia o log de processamento para o banco de dados via backend."""
     try:
         payload = {
@@ -150,6 +151,9 @@ def _startup():
         log("[MANAGER] poll thread started")
     else:
         log("[MANAGER] MANAGER_BASE_URL vazio; rodando modo antigo (ENV hardcoded)")
+    
+    # Inicia o worker da fila
+    asyncio.create_task(batch_worker())
 
 
 def mcli_fallback() -> Minio:
@@ -178,7 +182,7 @@ def client_for_storage(storage_id: str) -> Minio:
         access_key = str(st.get("access_key") or "")
         secret_key = str(st.get("secret_key") or "")
 
-        cache_key = f"{endpoint_full}|{access_key}"
+        cache_key = f"{endpoint_full}|{access_key}|{secret_key}"
         with _CLIENTS_LOCK:
             if cache_key in _CLIENTS:
                 return _CLIENTS[cache_key]
@@ -229,11 +233,18 @@ def detect_content_type(ext: str) -> str:
 
 
 def head_is_optimized(client: Minio, bucket: str, key: str) -> bool:
-    st = client.stat_object(bucket, key)
-    md = {k.lower(): v for k, v in (st.metadata or {}).items()}
-    for k, v in md.items():
-        if k.endswith(META_OPT_KEY) and v == META_OPT_VAL:
-            return True
+    try:
+        st = client.stat_object(bucket, key)
+        md = {k.lower(): v for k, v in (st.metadata or {}).items()}
+        for k, v in md.items():
+            if k.endswith(META_OPT_KEY.lower()):
+                if str(v) == str(META_OPT_VAL):
+                    return True
+                else:
+                    log(f"[DEBUG] Metadata match found but value mismatch: {k}={v} (expected {META_OPT_VAL})")  
+    except Exception as e:
+        # Se falhar o stat, assumimos que não está otimizado ou não existe
+        pass
     return False
 
 
@@ -684,7 +695,7 @@ async def minio_webhook(req: Request, storage_id: str = Query(default=DEFAULT_ST
         client = client_for_storage(storage_id)
 
         try:
-            ok, reason, media = await asyncio.to_thread(process_one_key, client, bkt, key, cfg, storage_id)
+            ok, reason, media = await asyncio.to_thread(process_one_key, client, bkt, key, cfg, storage_id)     
 
             if ok:
                 processed += 1
@@ -716,6 +727,125 @@ async def minio_webhook(req: Request, storage_id: str = Query(default=DEFAULT_ST
     return {"ok": True, "processed": processed, "skipped": skipped, "failed": failed}
 
 
+# Global batch state
+_BATCH_RUNNING = False
+_BATCH_STOP_REQUESTED = False
+_BATCH_QUEUE = asyncio.Queue()
+
+async def batch_worker():
+    """Worker que processa a fila de batches sequencialmente."""
+    global _BATCH_RUNNING, _BATCH_STOP_REQUESTED
+    log("[BATCH-WORKER] Started")
+    while True:
+        # Pega a próxima tarefa da fila
+        task = await _BATCH_QUEUE.get()
+        try:
+            storage_id = task["storage_id"]
+            bucket = task["bucket"]
+            prefix = task["prefix"]
+            limit = task["limit"]
+            dry_run = task["dry_run"]
+            callback_url = task["callback_url"]
+
+            _BATCH_RUNNING = True
+            _BATCH_STOP_REQUESTED = False
+
+            client = client_for_storage(storage_id)
+            target_bucket = bucket or MINIO_BUCKET
+            cfg = resolve_bucket_cfg(storage_id, target_bucket)
+            target_prefix = prefix if prefix is not None else cfg_prefix_root(cfg)
+            prefix_work = cfg_prefix_work(cfg)
+
+            log(f"[BATCH-TASK] Starting background scan for {storage_id}/{target_bucket}/{target_prefix}")
+            
+            sem = asyncio.Semaphore(MAX_CONCURRENCY)
+            lock = asyncio.Lock()
+            processed = 0
+            skipped = 0
+            failed = 0
+            candidates = 0
+            scanned = 0
+
+            async def handle_key(k: str):
+                nonlocal processed, skipped, failed
+                async with sem:
+                    if BATCH_SLEEP_MS > 0: await asyncio.sleep(BATCH_SLEEP_MS / 1000.0)
+                    if dry_run: return
+                    try:
+                        ok, reason, media = await asyncio.to_thread(process_one_key, client, target_bucket, k, cfg, storage_id)
+                        async with lock:
+                            if ok: processed += 1
+                            else: skipped += 1
+                    except Exception:
+                        async with lock: failed += 1
+
+            tasks = []
+            objects = client.list_objects(target_bucket, prefix=target_prefix, recursive=True)
+            for obj in objects:
+                if _BATCH_STOP_REQUESTED:
+                    log("[BATCH-TASK] Stop requested by user.")
+                    break
+                
+                k = getattr(obj, "object_name", None)
+                if not k: continue
+                
+                scanned += 1
+                if scanned % 1000 == 0:
+                    log(f"[BATCH-TASK] Progress: scanned={scanned} candidates={candidates} processed={processed}")
+
+                if k.startswith(prefix_work):
+                    continue
+
+                if cfg and not bool(cfg.get("enabled", False)): break
+                if cfg and not passes_prefix_rules(k, cfg): continue
+                
+                e = ext_of(k)
+                if e not in IMG_EXTS and e not in VID_EXTS: continue
+                
+                candidates += 1
+                tasks.append(asyncio.create_task(handle_key(k)))
+                
+                if limit > 0 and candidates >= limit: break
+                
+                if len(tasks) >= 200:
+                    await asyncio.gather(*tasks)
+                    tasks = []
+            
+            if tasks: await asyncio.gather(*tasks)
+            
+            log(f"[BATCH-TASK] Finished. S:{scanned} C:{candidates} P:{processed} Sk:{skipped} F:{failed}")
+            
+            if callback_url:
+                try:
+                    results = {
+                        "scanned": scanned,
+                        "candidates": candidates,
+                        "processed": processed,
+                        "skipped": skipped,
+                        "failed": failed,
+                        "timestamp": str(asyncio.get_event_loop().time()),
+                        "stopped": _BATCH_STOP_REQUESTED
+                    }
+                    async with httpx.AsyncClient() as c:
+                        await c.post(callback_url, json=results, timeout=10)
+                    log(f"[BATCH-TASK] Callback with results sent to {callback_url}")
+                except Exception as cb_err:
+                    log(f"[BATCH-TASK] Callback FAILED: {cb_err}")
+
+        except Exception as e:
+            log(f"[BATCH-TASK] CRITICAL ERROR: {e}")
+        finally:
+            _BATCH_RUNNING = False
+            _BATCH_QUEUE.task_done()
+
+@app.post("/batch/stop")
+async def stop_batch():
+    global _BATCH_STOP_REQUESTED
+    if not _BATCH_RUNNING:
+        return {"ok": False, "message": "No batch running"}
+    _BATCH_STOP_REQUESTED = True
+    return {"ok": True, "message": "Stop requested for current task"}
+
 @app.post("/batch")
 async def batch_optimize(
     storage_id: str = Query(default=DEFAULT_STORAGE_ID, description="ID do storage no Manager"),
@@ -723,120 +853,20 @@ async def batch_optimize(
     prefix: str = Query(default=None, description="Prefixo (se omitido usa o root da config ou PREFIX_ROOT)"),
     limit: int = Query(default=0, description="0 = sem limite"),
     dry_run: bool = Query(default=False, description="Se true, só lista o que faria"),
+    callback_url: str = Query(default=None, description="URL para notificar quando terminar"),
 ):
     """
-    Varre um bucket e processa arquivos em massa.
-    Agora suporta storage_id e bucket dinâmicos vindos do Manager.
+    Adiciona uma tarefa de varredura à fila.
     """
-    client = client_for_storage(storage_id)
-    target_bucket = bucket or MINIO_BUCKET
-    
-    # Resolve config para pegar prefixos e limites
-    cfg = resolve_bucket_cfg(storage_id, target_bucket)
-    
-    # Se prefix não foi passado, tenta pegar da config
-    target_prefix = prefix
-    if target_prefix is None:
-        target_prefix = cfg_prefix_root(cfg)
-
-    sem = asyncio.Semaphore(MAX_CONCURRENCY)
-    lock = asyncio.Lock()
-
-    processed = 0
-    skipped = 0
-    failed = 0
-    candidates = 0
-
-    async def handle_key(k: str):
-        nonlocal processed, skipped, failed
-        area = detect_area(k)
-
-        async with sem:
-            if BATCH_SLEEP_MS > 0:
-                await asyncio.sleep(BATCH_SLEEP_MS / 1000.0)
-
-            if dry_run:
-                log(f"[DRY] {target_bucket}/{k}")
-                return
-
-            try:
-                ok, reason, media = await asyncio.to_thread(process_one_key, client, target_bucket, k, cfg, storage_id)
-
-                async with lock:
-                    if ok:
-                        processed += 1
-                        if media in ("image", "video"):
-                            OPT_EVENTS.labels(media, "processed", area).inc()
-                        else:
-                            OPT_EVENTS.labels("image", "processed", area).inc()
-                            OPT_EVENTS.labels("video", "processed", area).inc()
-                    else:
-                        skipped += 1
-                        log(f"[SKIP] {reason} {target_bucket}/{k}")
-                        if media in ("image", "video"):
-                            OPT_EVENTS.labels(media, "skipped", area).inc()
-                        else:
-                            OPT_EVENTS.labels("image", "skipped", area).inc()
-                            OPT_EVENTS.labels("video", "skipped", area).inc()
-
-                        if media in ("image", "video") and reason.endswith("_failed"):
-                            OPT_FAIL.labels(media, reason, area).inc()
-
-            except Exception as e:
-                async with lock:
-                    failed += 1
-                log(f"[FAIL] batch_unexpected {target_bucket}/{k} err={e}")
-                OPT_EVENTS.labels("image", "failed", area).inc()
-                OPT_EVENTS.labels("video", "failed", area).inc()
-                OPT_FAIL.labels("image", "batch_unexpected", area).inc()
-                OPT_FAIL.labels("video", "batch_unexpected", area).inc()
-
-    tasks = []
-    log(f"[BATCH] Starting scan storage={storage_id} bucket={target_bucket} prefix={target_prefix}")
-    
-    try:
-        objects = client.list_objects(target_bucket, prefix=target_prefix, recursive=True)
-        for obj in objects:
-            k = getattr(obj, "object_name", None)
-            if not k:
-                continue
-
-            if cfg is not None:
-                if not bool(cfg.get("enabled", False)):
-                    log(f"[BATCH] Optimizer disabled for this bucket config. Stopping.")
-                    break
-                if not passes_prefix_rules(k, cfg):
-                    continue
-
-            e = ext_of(k)
-            if e not in IMG_EXTS and e not in VID_EXTS:
-                continue
-
-            candidates += 1
-            tasks.append(asyncio.create_task(handle_key(k)))
-
-            if limit and limit > 0 and candidates >= limit:
-                break
-
-            if len(tasks) >= 500:
-                await asyncio.gather(*tasks)
-                tasks = []
-    except Exception as e:
-        log(f"[BATCH] Error listing objects: {e}")
-        return {"ok": False, "error": str(e)}
-
-    if tasks:
-        await asyncio.gather(*tasks)
-
-    return {
-        "ok": True,
+    task = {
         "storage_id": storage_id,
-        "bucket": target_bucket,
-        "prefix": target_prefix,
+        "bucket": bucket,
+        "prefix": prefix,
+        "limit": limit,
         "dry_run": dry_run,
-        "candidates": candidates,
-        "processed": processed,
-        "skipped": skipped,
-        "failed": failed,
-        "max_concurrency": MAX_CONCURRENCY,
+        "callback_url": callback_url
     }
+    await _BATCH_QUEUE.put(task)
+    
+    pos = _BATCH_QUEUE.qsize()
+    return {"ok": True, "message": f"Task added to queue. Position: {pos}"}

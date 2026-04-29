@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import "./App.css";
 import ReplicationPanel from "./ReplicationPanel";
 
@@ -111,6 +111,7 @@ function App() {
   const [accounts, setAccounts] = useState<StorageAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<StorageAccount | null>(null);
   const [showLifecycleForm, setShowLifecycleForm] = useState(false);
   
   // Roteamento baseado em Hash
@@ -130,6 +131,7 @@ function App() {
   const [loadingReplication, setLoadingReplication] = useState(false);
   const [showReplicationForm, setShowReplicationForm] = useState(false);
   const [newReplica, setNewReplica] = useState({ target_storage_id: "", target_bucket: "", priority: 1 });
+  const [editingReplicationId, setEditingReplicationId] = useState<string | null>(null);
   const [targetBuckets, setTargetBuckets] = useState<string[]>([]);
 
   const [showOptimizerForm, setShowOptimizerForm] = useState(false);
@@ -142,6 +144,62 @@ function App() {
   const [optimizerStats, setOptimizerStats] = useState({ count: 0, total_before: 0, total_after: 0, bytes_saved: 0 });
   const [infraSynced, setInfraSynced] = useState(false);
   const [showCustomPolicyModal, setShowCustomPolicyModal] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showResultsModal, setShowResultsModal] = useState(false);
+  const [selectedResults, setSelectedResults] = useState<any>(null);
+
+  const notifiedScansRef = useRef<Set<string>>(new Set());
+
+  // Polling para atualizar status de scanning e detectar conclusões (agora por CONTA inteira)
+  useEffect(() => {
+    let interval: any;
+    
+    if (selectedAccount) {
+      interval = setInterval(() => {
+        fetch(`/api/accounts/${selectedAccount.id}/optimizer-configs`)
+          .then(res => res.json())
+          .then(data => {
+            if (!Array.isArray(data)) return;
+            
+            const newNotifications: any[] = [];
+            
+            data.forEach((newCfg: any) => {
+              // 1. Rastreia notificações (global por conta)
+              const scanKey = `${newCfg.id}-${newCfg.last_scan_at}`;
+
+              // Se terminou uma varredura e ainda não notificamos
+              if (newCfg.is_scanning === 0 && newCfg.last_scan_at && !notifiedScansRef.current.has(scanKey)) {
+                // Só notifica se não for a primeira carga da página (evita spam ao abrir)
+                if (notifiedScansRef.current.size > 0) {
+                  const results = newCfg.last_scan_results ? JSON.parse(newCfg.last_scan_results) : null;
+                  newNotifications.push({
+                    id: `${scanKey}-${Date.now()}`,
+                    title: "✅ Varredura Completa",
+                    message: `O bucket "${newCfg.bucket_name}" finalizou a pasta "${newCfg.prefix_root || '/'}".`,
+                    results: results,
+                    prefix: newCfg.prefix_root
+                  });
+                }
+                notifiedScansRef.current.add(scanKey);
+              }
+            });
+
+            if (newNotifications.length > 0) {
+              setNotifications(prev => [...newNotifications, ...prev]);
+            }
+
+            // 2. Atualiza o estado visual se o bucket selecionado estiver no lote
+            if (selectedBucket) {
+              const currentBucketConfigs = data.filter(c => c.bucket_name === selectedBucket);
+              setOptimizerConfigs(currentBucketConfigs);
+            }
+          })
+          .catch(() => {});
+      }, 3000);
+    }
+    
+    return () => { if (interval) clearInterval(interval); };
+  }, [selectedAccount, selectedBucket]);
   const [customPolicyTarget, setCustomPolicyTarget] = useState<{type: 'bucket' | 'folder', id?: number} | null>(null);
   const [tempCustomPerms, setTempCustomPerms] = useState({
     "s3:GetObject": true,
@@ -281,6 +339,13 @@ function App() {
     e.preventDefault();
     if (!selectedAccount || !selectedBucket) return;
     try {
+      // Se estiver editando, removemos a regra antiga primeiro
+      if (editingReplicationId) {
+        await fetch(`/api/replication/bucket/${selectedAccount.id}/${selectedBucket}/${editingReplicationId}`, {
+          method: "DELETE"
+        });
+      }
+
       const res = await fetch(`/api/replication/bucket`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -294,12 +359,29 @@ function App() {
       });
       if (res.ok) {
         setShowReplicationForm(false);
+        setEditingReplicationId(null);
+        setNewReplica({ target_storage_id: "", target_bucket: "", priority: 1 });
         loadBucketConfigs(selectedAccount.id, selectedBucket);
       } else {
         const err = await res.json();
         alert("Erro: " + err.error);
       }
     } catch (e) { alert("Erro ao salvar replicação"); }
+  };
+
+  const handleEditReplication = (rule: any) => {
+    // Extrai o storage_id e o bucket do Destination do mc
+    // O mc retorna algo como "arn:minio:replication:us-east-1:3485038c...:bucketname"
+    // Precisamos encontrar qual conta tem esse bucket. 
+    // Para simplificar a UX, vamos focar em editar a PRIORIDADE, 
+    // já que o destino é mais complexo de mapear reverso sem metadados extras.
+    
+    setEditingReplicationId(rule.ID);
+    setNewReplica({
+      ...newReplica,
+      priority: rule.Priority || 1
+    });
+    setShowReplicationForm(true);
   };
 
   const handleDeleteReplication = async (ruleId: string) => {
@@ -503,7 +585,7 @@ function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        alert(`Batch iniciado!\nCandidatos: ${data.candidates}\nProcessados: ${data.processed}\nPulados: ${data.skipped}`);
+        alert("Varredura iniciada em segundo plano! Você pode acompanhar o status pelo botão 'Varrendo...'.");
       } else {
         alert("Erro ao iniciar batch: " + (data.error || "Erro desconhecido"));
       }
@@ -549,12 +631,38 @@ function App() {
     } catch (error) { alert("Erro ao atualizar política da pasta"); }
   };
 
-  const handleCreateAccount = async (e: React.FormEvent) => {
+  const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData) });
-      if (res.ok) { setShowForm(false); fetchAccounts(); }
-    } catch (error) { alert("Erro"); }
+      const url = editingAccount ? `/api/accounts/${editingAccount.id}` : "/api/accounts";
+      const method = editingAccount ? "PUT" : "POST";
+      
+      const res = await fetch(url, { 
+        method, 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify(formData) 
+      });
+      
+      if (res.ok) { 
+        setShowForm(false); 
+        setEditingAccount(null);
+        setFormData({ name: "", endpoint: "", region: "us-east-1", access_key: "", secret_key: "", provider: "minio" });
+        fetchAccounts(); 
+      }
+    } catch (error) { alert("Erro ao salvar conta"); }
+  };
+
+  const handleEditAccount = (acc: StorageAccount) => {
+    setEditingAccount(acc);
+    setFormData({
+      name: acc.name,
+      endpoint: acc.endpoint,
+      region: acc.region,
+      access_key: "", 
+      secret_key: "",
+      provider: acc.provider
+    });
+    setShowForm(true);
   };
 
   const handleDeleteAccount = async (id: string) => {
@@ -603,7 +711,11 @@ function App() {
           <>
             <header>
               <h1>Minhas Contas</h1>
-              <button className="btn-primary" onClick={() => setShowForm(true)}>+ Nova Conta</button>
+              <button className="btn-primary" onClick={() => {
+                setEditingAccount(null);
+                setFormData({ name: "", endpoint: "", region: "us-east-1", access_key: "", secret_key: "", provider: "minio" });
+                setShowForm(true);
+              }}>+ Nova Conta</button>
             </header>
             {loading ? <p>Carregando...</p> : (
               <div className="account-grid">
@@ -614,6 +726,7 @@ function App() {
                     <p style={{justifyContent: 'flex-start', gap: '8px'}}><span>Endpoint:</span> <strong>{acc.endpoint}</strong></p>
                     <div className="card-actions">
                       <button className="btn-primary" onClick={() => navigateTo(`/account/${acc.id}/buckets`)}>📦 Ver Buckets</button>
+                      <button className="btn-secondary" onClick={() => handleEditAccount(acc)}>✏️ Editar</button>
                       <button className="btn-danger" onClick={() => handleDeleteAccount(acc.id)}>🗑️ Excluir</button>
                     </div>
                   </div>
@@ -889,17 +1002,32 @@ function App() {
                                 <span className="action-label">LIMPEZA</span>
                               </div>
 
-                              <button className="btn-secondary btn-sweep" onClick={() => handleRunBatch(config.id, config.prefix_root)}>🚀 Varrer Agora</button>
+                              <button 
+                                className={`btn-secondary btn-sweep ${config.is_scanning ? 'loading' : ''}`} 
+                                onClick={() => handleRunBatch(config.id, config.prefix_root)}
+                                disabled={config.is_scanning}
+                              >
+                                {config.is_scanning ? "⏳ Varrendo..." : "🚀 Varrer Agora"}
+                              </button>
                               <div className="rule-action-buttons">
-                                <button className="btn-secondary btn-icon" onClick={() => {
+                                <button className="btn-secondary btn-icon" disabled={config.is_scanning} onClick={() => {
                                   setEditingOptimizer(config);
-                                  setNewOptimizer(config);
+                                  setNewOptimizer({
+                                    enabled: config.enabled,
+                                    prefix_root: config.prefix_root,
+                                    prefix_work: config.prefix_work,
+                                    min_size_kb: config.min_size_kb,
+                                    video_max_mb: config.video_max_mb,
+                                    auto_lifecycle: config.auto_lifecycle,
+                                    access_policy: config.access_policy || 'private',
+                                    custom_policy: config.custom_policy
+                                  });
                                   setShowOptimizerForm(true);
                                   setTimeout(() => {
                                     document.getElementById('optimizer-section')?.scrollIntoView({ behavior: 'smooth' });
                                   }, 100);
                                 }}>✏️</button>
-                                <button className="btn-danger btn-icon" onClick={() => handleDeleteOptimizer(config.id)}>🗑️</button>
+                                <button className="btn-danger btn-icon" disabled={config.is_scanning} onClick={() => handleDeleteOptimizer(config.id)}>🗑️</button>
                               </div>
                             </div>
                           </div>
@@ -913,24 +1041,41 @@ function App() {
               <section className="config-section">
                 <header style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem'}}>
                   <h2>🔄 Replicação do Bucket</h2>
-                  <button className="btn-primary" onClick={() => setShowReplicationForm(true)}>+ Nova Réplica</button>
+                  <button className="btn-primary" onClick={() => {
+                    setEditingReplicationId(null);
+                    setNewReplica({ target_storage_id: "", target_bucket: "", priority: 1 });
+                    setShowReplicationForm(true);
+                  }}>+ Nova Réplica</button>
                 </header>
                 {showReplicationForm && (
                   <div className="rule-form-container" style={{background:'#f8fafc', padding:'1.5rem', borderRadius:'12px', border:'1px solid #e2e8f0', marginBottom:'1.5rem'}}>
                     <form onSubmit={handleAddReplication}>
+                      <h3>{editingReplicationId ? "Editar Réplica" : "Nova Réplica"}</h3>
                       <div className="form-group">
                         <label>Storage Destino</label>
-                        <select value={newReplica.target_storage_id} onChange={e => setNewReplica({...newReplica, target_storage_id: e.target.value})} required>
+                        <select 
+                          value={newReplica.target_storage_id} 
+                          onChange={e => setNewReplica({...newReplica, target_storage_id: e.target.value})} 
+                          required
+                          disabled={!!editingReplicationId}
+                        >
                           <option value="">Selecione...</option>
                           {accounts.filter(a => a.id !== selectedAccount.id).map(acc => (
                             <option key={acc.id} value={acc.id}>{acc.name}</option>
                           ))}
                         </select>
+                        {editingReplicationId && <small style={{color:'#64748b'}}>O destino não pode ser alterado. Remova e crie outra se necessário.</small>}
                       </div>
                       <div className="form-row" style={{display: 'flex', gap: '1rem', marginTop:'1rem'}}>
                         <div className="form-group" style={{flex: 1}}>
                           <label>Bucket Destino</label>
-                          <input value={newReplica.target_bucket} onChange={e => setNewReplica({...newReplica, target_bucket: e.target.value})} list="target-buckets-cfg" required />
+                          <input 
+                            value={newReplica.target_bucket} 
+                            onChange={e => setNewReplica({...newReplica, target_bucket: e.target.value})} 
+                            list="target-buckets-cfg" 
+                            required 
+                            disabled={!!editingReplicationId}
+                          />
                           <datalist id="target-buckets-cfg">
                             {targetBuckets.map(b => (
                               <option key={b} value={b} />
@@ -943,8 +1088,8 @@ function App() {
                         </div>
                       </div>
                       <div className="card-actions" style={{justifyContent:'flex-end', marginTop:'1rem'}}>
-                        <button type="button" className="btn-secondary" onClick={() => setShowReplicationForm(false)}>Cancelar</button>
-                        <button type="submit" className="btn-primary">Ativar</button>
+                        <button type="button" className="btn-secondary" onClick={() => { setShowReplicationForm(false); setEditingReplicationId(null); }}>Cancelar</button>
+                        <button type="submit" className="btn-primary">{editingReplicationId ? "Salvar Alterações" : "Ativar"}</button>
                       </div>
                     </form>
                   </div>
@@ -959,7 +1104,12 @@ function App() {
                           <td>{formatReplicaDest(r.Destination)}</td>
                           <td>{r.Priority}</td>
                           <td><span className="badge badge-success" style={{marginBottom: 0}}>{r.Status}</span></td>
-                          <td><button className="btn-danger" style={{padding:'4px 8px'}} onClick={() => handleDeleteReplication(r.ID)}>🗑️</button></td>
+                          <td>
+                            <div style={{display:'flex', gap:'8px'}}>
+                              <button className="btn-secondary" style={{padding:'4px 8px'}} onClick={() => handleEditReplication(r)}>✏️</button>
+                              <button className="btn-danger" style={{padding:'4px 8px'}} onClick={() => handleDeleteReplication(r.ID)}>🗑️</button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                       {bucketReplicationRules.length === 0 && (
@@ -1030,19 +1180,25 @@ function App() {
         {showForm && (
           <div className="modal-overlay">
             <div className="modal">
-              <h2>Configurar Nova Conta S3</h2>
-              <form onSubmit={handleCreateAccount}>
+              <h2>{editingAccount ? `Editar Conta: ${editingAccount.name}` : "Configurar Nova Conta S3"}</h2>
+              <form onSubmit={handleSaveAccount}>
                 <div className="form-group"><label>Nome de Exibição</label><input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Ex: Produção" /></div>
                 <div className="form-group"><label>Endpoint URL</label><input required value={formData.endpoint} onChange={e => setFormData({...formData, endpoint: e.target.value})} placeholder="https://..." /></div>
                 <div className="form-row" style={{display: 'flex', gap: '1.5rem'}}>
                   <div className="form-group" style={{flex: 1}}><label>Região</label><input value={formData.region} onChange={e => setFormData({...formData, region: e.target.value})} /></div>
                   <div className="form-group" style={{flex: 1}}><label>Provedor</label><select value={formData.provider} onChange={e => setFormData({...formData, provider: e.target.value})}><option value="minio">MinIO</option><option value="aws">AWS S3</option></select></div>
                 </div>
-                <div className="form-group"><label>Access Key</label><input required value={formData.access_key} onChange={e => setFormData({...formData, access_key: e.target.value})} /></div>
-                <div className="form-group"><label>Secret Key</label><input type="password" required value={formData.secret_key} onChange={e => setFormData({...formData, secret_key: e.target.value})} /></div>
+                <div className="form-group">
+                  <label>Access Key {editingAccount && <span style={{fontSize:'0.7rem', color:'#64748b'}}>(Deixe vazio para não alterar)</span>}</label>
+                  <input required={!editingAccount} value={formData.access_key} onChange={e => setFormData({...formData, access_key: e.target.value})} />
+                </div>
+                <div className="form-group">
+                  <label>Secret Key {editingAccount && <span style={{fontSize:'0.7rem', color:'#64748b'}}>(Deixe vazio para não alterar)</span>}</label>
+                  <input type="password" required={!editingAccount} value={formData.secret_key} onChange={e => setFormData({...formData, secret_key: e.target.value})} />
+                </div>
                 <div className="card-actions" style={{justifyContent: 'flex-end'}}>
-                  <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancelar</button>
-                  <button type="submit" className="btn-primary">Salvar Conta</button>
+                  <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setEditingAccount(null); }}>Cancelar</button>
+                  <button type="submit" className="btn-primary">{editingAccount ? "Salvar Alterações" : "Salvar Conta"}</button>
                 </div>
               </form>
             </div>
@@ -1097,6 +1253,70 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* MODAL DE RESULTADOS DA VARREDURA */}
+        {showResultsModal && selectedResults && (
+          <div className="modal-overlay">
+            <div className="modal" style={{ maxWidth: '600px' }}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem'}}>
+                <h2>📊 Relatório de Otimização</h2>
+                <button className="btn-secondary btn-icon" onClick={() => setShowResultsModal(false)}>✕</button>
+              </div>
+              <p style={{color:'#64748b', fontSize:'0.9rem', marginBottom:'1.5rem'}}>
+                Resumo da varredura realizada na pasta <strong>{selectedResults.prefix || '/'}</strong>.
+              </p>
+              
+              <div className="results-grid">
+                <div className="result-item">
+                  <span className="result-value">{selectedResults.candidates}</span>
+                  <span className="result-label">Arquivos Vistos</span>
+                </div>
+                <div className="result-item">
+                  <span className="result-value" style={{color:'#10b981'}}>{selectedResults.processed}</span>
+                  <span className="result-label">Otimizados</span>
+                </div>
+                <div className="result-item">
+                  <span className="result-value" style={{color:'#f59e0b'}}>{selectedResults.skipped}</span>
+                  <span className="result-label">Pulados/Sem Ganho</span>
+                </div>
+                <div className="result-item">
+                  <span className="result-value" style={{color:'#ef4444'}}>{selectedResults.failed}</span>
+                  <span className="result-label">Falhas</span>
+                </div>
+              </div>
+
+              <div className="card-actions" style={{ justifyContent: 'center' }}>
+                <button type="button" className="btn-primary" onClick={() => setShowResultsModal(false)}>Entendido</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CONTAINER DE NOTIFICAÇÕES */}
+        <div className="notifications-container">
+          {notifications.map(n => (
+            <div key={n.id} className="notification-card">
+              <div className="notification-header">
+                <h4>{n.title}</h4>
+                <span className="notification-close" onClick={() => setNotifications(prev => prev.filter(x => x.id !== n.id))}>✕</span>
+              </div>
+              <p>{n.message}</p>
+              {n.results && (
+                <button 
+                  className="btn-link" 
+                  style={{textAlign:'left', padding:0, marginTop:'0.5rem'}}
+                  onClick={() => {
+                    setSelectedResults({...n.results, prefix: n.prefix});
+                    setShowResultsModal(true);
+                    setNotifications(prev => prev.filter(x => x.id !== n.id));
+                  }}
+                >
+                  Ver estatísticas detalhadas →
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       </main>
     </div>
   );
