@@ -26,6 +26,8 @@ services:
     container_name: object-storage-backend
     ports:
       - "3005:3005"
+    env_file:
+      - ./backend/.env
     environment:
       PORT: 3005
       DB_HOST: db
