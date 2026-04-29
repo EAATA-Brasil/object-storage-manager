@@ -12,4 +12,4 @@ COPY . .
 EXPOSE 5173
 
 # O parâmetro --host é necessário para que o Vite aceite conexões de fora do container
-CMD ["npm", "run", "dev", "--", "--host"]
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]

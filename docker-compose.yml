@@ -41,7 +41,9 @@ services:
       - ./backend:/app
       - /app/node_modules
     networks:
-      - root_eaata-net
+      root_eaata-net:
+        aliases:
+          - backend
 
   frontend:
     build: ./frontend

@@ -53,6 +53,9 @@ export async function initDB() {
       auto_lifecycle BOOLEAN DEFAULT FALSE,
       access_policy VARCHAR(50) DEFAULT 'private',
       custom_policy TEXT,
+      is_scanning BOOLEAN DEFAULT FALSE,
+      last_scan_at TIMESTAMP NULL,
+      last_scan_results TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY unique_bucket_prefix (storage_account_id, bucket_name, prefix_root),
       FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE
@@ -72,6 +75,14 @@ export async function initDB() {
     await pool.query("ALTER TABLE bucket_optimizer_configs ADD COLUMN custom_policy TEXT");
   } catch (e) {}
 
+  try {
+    await pool.query("ALTER TABLE bucket_optimizer_configs ADD COLUMN is_scanning BOOLEAN DEFAULT FALSE");
+  } catch (e) {}
+
+  try {
+    await pool.query("ALTER TABLE bucket_optimizer_configs ADD COLUMN last_scan_at TIMESTAMP NULL");
+  } catch (e) {}
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS processed_files (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -82,6 +93,7 @@ export async function initDB() {
       bytes_before BIGINT,
       bytes_after BIGINT,
       optimized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
       FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE
     )
   `);
@@ -91,6 +103,19 @@ export async function initDB() {
     CREATE TABLE IF NOT EXISTS system_config (
       config_key VARCHAR(50) PRIMARY KEY,
       config_value TEXT
+    )
+  `);
+
+  // Tabela para políticas de acesso granulares por pasta
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bucket_folder_policies (
+      storage_account_id VARCHAR(36) NOT NULL,
+      bucket_name VARCHAR(255) NOT NULL,
+      folder_prefix VARCHAR(255) NOT NULL,
+      policy VARCHAR(50) DEFAULT 'private',
+      custom_policy TEXT,
+      PRIMARY KEY (storage_account_id, bucket_name, folder_prefix),
+      FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE
     )
   `);
 

@@ -1,21 +1,15 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { pool } from "../db";
+import { decrypt } from "../utils/crypto";
 
 const execAsync = promisify(exec);
 
-export interface ReplicationConfig {
-  source_storage_id: string;
-  source_bucket?: string;
-  target_storage_id: string;
-  target_bucket?: string;
-  type: 'bucket' | 'site';
-  priority?: number;
-}
+// Diretório temporário para configurações do MC (evita erro de permissão no Docker)
+const MC_CONFIG_DIR = "/tmp/.mc";
 
 /**
  * Configura um alias no MC para uma conta de storage.
- * Gera um alias compatível (começa com letra e sem hífens).
  */
 async function setMCAlias(storageId: string) {
   const [rows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [storageId]);
@@ -25,9 +19,18 @@ async function setMCAlias(storageId: string) {
   // Alias precisa começar com letra e ser alfanumérico
   const alias = `acc${storageId.replace(/-/g, '')}`;
   
-  const cmd = `mc alias set "${alias}" "${account.endpoint}" "${account.access_key}" "${account.secret_key}"`;
-  await execAsync(cmd);
-  return alias;
+  const access = decrypt(account.access_key);
+  const secret = decrypt(account.secret_key);
+
+  const cmd = `mc --config-dir ${MC_CONFIG_DIR} alias set "${alias}" "${account.endpoint}" "${access}" "${secret}"`;
+  
+  try {
+    await execAsync(cmd);
+    return alias;
+  } catch (err: any) {
+    console.error(`FAILED to set MC alias for ${storageId}:`, err.message);
+    throw new Error(`CLI Error: Failed to connect to storage account`);
+  }
 }
 
 /**
@@ -35,7 +38,7 @@ async function setMCAlias(storageId: string) {
  */
 async function ensureVersioning(storageId: string, bucketName: string) {
   const alias = await setMCAlias(storageId);
-  const cmd = `mc version enable "${alias}/${bucketName}"`;
+  const cmd = `mc --config-dir ${MC_CONFIG_DIR} version enable "${alias}/${bucketName}"`;
   await execAsync(cmd);
 }
 
@@ -54,26 +57,23 @@ export async function setupBucketReplication(config: ReplicationConfig) {
   await ensureVersioning(source_storage_id, source_bucket);
   await ensureVersioning(target_storage_id, target_bucket);
 
-  // 2. Obtém as credenciais do alvo para montar a URL de replicação
   const [targetRows]: any = await pool.query("SELECT * FROM storage_accounts WHERE id = ?", [target_storage_id]);
   const target = targetRows[0];
 
-  // 3. Adiciona a regra de replicação
-  const escapedAccess = encodeURIComponent(target.access_key);
-  const escapedSecret = encodeURIComponent(target.secret_key);
+  const escapedAccess = encodeURIComponent(decrypt(target.access_key));
+  const escapedSecret = encodeURIComponent(decrypt(target.secret_key));
   
   const remoteUrl = target.endpoint.replace("http://", "").replace("https://", "");
   const protocol = target.endpoint.startsWith("https") ? "https" : "http";
   const remoteBucketUrl = `${protocol}://${escapedAccess}:${escapedSecret}@${remoteUrl}/${target_bucket}`;
 
-  let cmd = `mc replicate add "${sourceAlias}/${source_bucket}" --remote-bucket "${remoteBucketUrl}"`;
+  let cmd = `mc --config-dir ${MC_CONFIG_DIR} replicate add "${sourceAlias}/${source_bucket}" --remote-bucket "${remoteBucketUrl}"`;
   
   if (priority !== undefined) {
     cmd += ` --priority ${priority}`;
   }
 
   const { stdout, stderr } = await execAsync(cmd, { timeout: 20000 });
-  
   return { stdout, stderr };
 }
 
@@ -84,10 +84,8 @@ export async function setupSiteReplication(sourceId: string, targetId: string) {
   const sourceAlias = await setMCAlias(sourceId);
   const targetAlias = await setMCAlias(targetId);
 
-  // No MinIO, Site Replication exige que os sites sejam "pareados"
-  const cmd = `mc admin replicate add "${sourceAlias}" "${targetAlias}"`;
+  const cmd = `mc --config-dir ${MC_CONFIG_DIR} admin replicate add "${sourceAlias}" "${targetAlias}"`;
   const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
-  
   return { stdout, stderr };
 }
 
@@ -95,39 +93,38 @@ export async function setupSiteReplication(sourceId: string, targetId: string) {
  * Lista as replicações ativas em um bucket.
  */
 export async function listReplications(storageId: string, bucketName: string) {
-  const alias = await setMCAlias(storageId);
-  const cmd = `mc replicate ls "${alias}/${bucketName}" --json`;
   try {
+    const alias = await setMCAlias(storageId);
+    const cmd = `mc --config-dir ${MC_CONFIG_DIR} replicate ls "${alias}/${bucketName}" --json`;
     const { stdout } = await execAsync(cmd);
     return stdout.split("\n")
       .filter(l => l.trim())
       .map(l => {
         try {
           const parsed = JSON.parse(l);
-          // O mc retorna a regra dentro de um campo 'rule'
           return parsed.rule || parsed;
         } catch (e) { return null; }
       })
-      .filter(r => r && r.ID); // Filtra apenas regras válidas com ID
-  } catch (e) {
+      .filter(r => r && r.ID);
+  } catch (e: any) {
+    console.warn(`Replication list failed for ${bucketName}:`, e.message);
     return [];
   }
 }
 
 /**
  * Status do Site Replication.
- * Retorna null se não houver replicação ativa (mais de 1 site).
  */
 export async function getSiteReplicationStatus(storageId: string) {
-  const alias = await setMCAlias(storageId);
-  const cmd = `mc admin replicate info "${alias}" --json`;
   try {
+    const alias = await setMCAlias(storageId);
+    const cmd = `mc --config-dir ${MC_CONFIG_DIR} admin replicate info "${alias}" --json`;
     const { stdout } = await execAsync(cmd);
     const data = JSON.parse(stdout);
-    // Se não houver campo 'sites' ou só houver 1 site, não é um cluster
     if (!data || !data.sites || data.sites.length <= 1) return null;
     return data;
-  } catch (e) {
+  } catch (e: any) {
+    // Retorna null se não for um cluster ou comando falhar
     return null;
   }
 }
@@ -137,8 +134,7 @@ export async function getSiteReplicationStatus(storageId: string) {
  */
 export async function removeBucketReplication(storageId: string, bucketName: string, ruleId: string) {
   const alias = await setMCAlias(storageId);
-  // mc replicate rm ALIAS/BUCKET --id "RULE_ID"
-  const cmd = `mc replicate rm "${alias}/${bucketName}" --id "${ruleId}"`;
+  const cmd = `mc --config-dir ${MC_CONFIG_DIR} replicate rm "${alias}/${bucketName}" --id "${ruleId}"`;
   const { stdout, stderr } = await execAsync(cmd);
   return { stdout, stderr };
 }

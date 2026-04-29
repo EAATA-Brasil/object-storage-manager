@@ -7,15 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Adicionado 'requests' para o manager_cfg.py
-RUN pip install --no-cache-dir \
-    minio==7.2.7 \
-    pillow==10.4.0 \
-    python-multipart==0.0.9 \
-    fastapi==0.112.0 \
-    uvicorn==0.30.5 \
-    prometheus_client==0.20.0 \
-    requests==2.32.3
+# Copia requirements e instala dependências
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia todos os arquivos Python e configuração do projeto
 COPY . /app
