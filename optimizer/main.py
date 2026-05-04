@@ -391,9 +391,8 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
         "-b:a", a_bitrate,
         "-ac", "2",
 
-        "-movflags", "+faststart",
         "-max_muxing_queue_size", "4096",
-        "-vsync", "2",
+        "-r", "30",
         out_path
     ]
 
