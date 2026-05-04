@@ -140,10 +140,13 @@ def log_optimization(storage_id: str, bucket: str, file_key: str, file_type: str
             "bytes_after": after
         }
         url = f"{MANAGER_BASE_URL}/api/accounts/{storage_id}/buckets/{bucket}/log-processed"
-        requests.post(url, json=payload, timeout=5)
-        log(f"[LOG] Estatisticas enviadas para {file_key} ({before} -> {after})")
+        r = requests.post(url, json=payload, timeout=5)
+        if r.status_code >= 400:
+            log(f"[LOG] Falha ao enviar estatisticas para {file_key} (HTTP {r.status_code}): {r.text}")
+        else:
+            log(f"[LOG] Estatisticas enviadas para {file_key} ({before} -> {after})")
     except Exception as e:
-        log(f"[LOG] Falha ao enviar estatisticas: {e}")
+        log(f"[LOG] Falha ao enviar estatisticas para {file_key}: {e}")
 
 
 @app.on_event("startup")
@@ -366,7 +369,6 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
         "-hide_banner",
         "-loglevel", "error",
 
-        "-fflags", "+genpts",
         "-i", in_path,
 
         "-map", "0:v:0",
@@ -376,7 +378,6 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
 
         "-map_metadata", "-1",
         "-map_chapters", "-1",
-        "-avoid_negative_ts", "make_zero",
 
         "-vf", scale_filter,
         "-c:v", "libx264",
@@ -386,8 +387,10 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
 
         "-c:a", "aac",
         "-b:a", a_bitrate,
+        "-ac", "2",
 
         "-movflags", "+faststart",
+        "-max_muxing_queue_size", "1024",
         "-f", "mp4",
         out_path
     ]

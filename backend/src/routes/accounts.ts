@@ -645,8 +645,9 @@ router.get("/:id/buckets/:bucketName/optimizer-stats", async (req, res) => {
         SUM(bytes_before) as total_before,
         SUM(bytes_after) as total_after
       FROM processed_files 
-      WHERE storage_account_id = ? AND bucket_name = ?
-    `, [id, bucketName]);
+      WHERE (storage_account_id = ? OR storage_account_id IN (SELECT id FROM storage_accounts WHERE name = ?))
+      AND bucket_name = ?
+    `, [id, id, bucketName]);
     
     const stats = rows[0];
     const saved = (stats.total_before || 0) - (stats.total_after || 0);
@@ -666,10 +667,15 @@ router.post("/:id/buckets/:bucketName/log-processed", async (req, res) => {
   const { id, bucketName } = req.params;
   const { file_key, file_type, bytes_before, bytes_after } = req.body;
   try {
+    // Tenta resolver o ID real se 'id' for um nome amigável (slug)
+    const [accs]: any = await pool.query("SELECT id FROM storage_accounts WHERE id = ? OR name = ? LIMIT 1", [id, id]);
+    if (accs.length === 0) return res.status(404).json({ error: "Account not found" });
+    const realId = accs[0].id;
+
     await pool.query(`
       INSERT INTO processed_files (storage_account_id, bucket_name, file_key, file_type, bytes_before, bytes_after)
       VALUES (?, ?, ?, ?, ?, ?)
-    `, [id, bucketName, file_key, file_type, bytes_before, bytes_after]);
+    `, [realId, bucketName, file_key, file_type, bytes_before, bytes_after]);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
