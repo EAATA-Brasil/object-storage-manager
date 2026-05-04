@@ -369,10 +369,12 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
         "-hide_banner",
         "-loglevel", "error",
 
+        "-fflags", "+igndts",
         "-i", in_path,
 
         "-map", "0:v:0",
-        "-map", "0:a:0?",
+        "-map", "0:a?",
+        "-ignore_unknown",
         "-dn",
         "-sn",
 
@@ -390,8 +392,8 @@ def ffmpeg_transcode(in_path: str, out_path: str, params: dict) -> None:
         "-ac", "2",
 
         "-movflags", "+faststart",
-        "-max_muxing_queue_size", "1024",
-        "-f", "mp4",
+        "-max_muxing_queue_size", "4096",
+        "-vsync", "2",
         out_path
     ]
 
@@ -495,13 +497,6 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None, stor
         try:
             log(f"[IMG] start {bucket}/{key}")
 
-            work_key = None
-            try:
-                work_key = copy_to_work(client, bucket, key, prefix_root, prefix_work)
-                log(f"[IMG] copied_to_work {bucket}/{work_key}")
-            except Exception as e:
-                log(f"[WARN] copy_to_work_failed {bucket}/{key} err={e}")
-
             try:
                 resp = client.get_object(bucket, key)
                 try:
@@ -512,6 +507,25 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None, stor
             except Exception as e:
                 log(f"[FAIL] download_failed {bucket}/{key} err={e}")
                 return (False, "download_failed", media)
+
+            # Validação: verifica se é realmente uma imagem válida antes de prosseguir
+            try:
+                with Image.open(io.BytesIO(src_bytes)) as tmp_img:
+                    tmp_img.verify()
+            except Exception as e:
+                log(f"[SKIP] invalid_image_data {bucket}/{key} err={e}")
+                # Marcamos como otimizado para não tentar de novo um arquivo "quebrado"
+                try:
+                    mark_optimized_server_side(client, bucket, key)
+                except: pass
+                return (False, "invalid_image_data", media)
+
+            work_key = None
+            try:
+                work_key = copy_to_work(client, bucket, key, prefix_root, prefix_work)
+                log(f"[IMG] copied_to_work {bucket}/{work_key}")
+            except Exception as e:
+                log(f"[WARN] copy_to_work_failed {bucket}/{key} err={e}")
 
             before_size = len(src_bytes)
             BYTES_BEFORE.labels(media).inc(before_size)
