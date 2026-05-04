@@ -622,6 +622,15 @@ def process_one_key(client: Minio, bucket: str, key: str, cfg: dict | None, stor
 
             except Exception as e:
                 log(f"[FAIL] video_failed {bucket}/{key} err={e}")
+                
+                # NOVO: Se o vídeo falhar no transcode (provavelmente arquivo corrompido ou formato incompatível),
+                # marcamos como otimizado no servidor para não entrar em loop infinito de processamento.
+                try:
+                    log(f"[SKIP] marking_failed_video_as_optimized {bucket}/{key}")
+                    mark_optimized_server_side(client, bucket, key)
+                except Exception as meta_err:
+                    log(f"[FAIL] mark_meta_failed_on_video_error {bucket}/{key} err={meta_err}")
+
                 return (False, "video_failed", media)
 
             finally:
